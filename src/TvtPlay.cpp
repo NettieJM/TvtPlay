@@ -958,10 +958,10 @@ bool CTvtPlay::EnablePlugin(bool fEnable) {
             LOGFONT lf;
             m_statusView.GetFont(&lf);
             if (lf.lfHeight < 0) {
-                lf.lfHeight *= 2;
+                lf.lfHeight *= 4;
             }
             else {
-                lf.lfHeight = -24;
+                lf.lfHeight = -48;
             }
             lf.lfWeight = FW_BOLD;
             m_hfontOsd = ::CreateFontIndirect(&lf);
@@ -2008,7 +2008,10 @@ void CTvtPlay::UpdateOsdPosition(int width, int height)
     if (!hwndBase) hwndBase = m_pApp->GetAppWindow();
 
     RECT rc;
-    if (!::GetWindowRect(hwndBase, &rc)) return;
+    if (!::GetClientRect(hwndBase, &rc)) return;
+
+    POINT pt = {0, 0};
+    ::ClientToScreen(hwndBase, &pt);
 
     if (width < 0 || height < 0) {
         RECT rcOsd;
@@ -2017,8 +2020,8 @@ void CTvtPlay::UpdateOsdPosition(int width, int height)
         height = rcOsd.bottom - rcOsd.top;
     }
 
-    int x = rc.right - width - OSD_MARGIN;
-    int y = rc.top + OSD_MARGIN;
+    int x = pt.x + (rc.right - width) / 2;
+    int y = pt.y + (rc.bottom - height) / 2;
 
     ::SetWindowPos(
         m_hwndOsd,
