@@ -125,7 +125,7 @@ private:
     HFONT m_hfontOsd;
     TCHAR m_szOsdText[32];
     int m_osdFontSizeRatio;
-    int m_osdAlpha;f
+    int m_osdAlpha;
     int m_osdTimeout;
     TCHAR m_szTimestampFilePath[MAX_PATH];
     TCHAR m_szLastRecordedTitle[MAX_PATH];
