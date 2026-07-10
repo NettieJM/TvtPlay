@@ -150,7 +150,7 @@ CTvtPlay::CTvtPlay()
     , m_hwndFrame(nullptr)
     , m_hwndOsd(nullptr)
     , m_hfontOsd(nullptr)
-    , m_osdFontSize(48)
+    , m_osdFontSizeRatio(7)
     , m_osdAlpha(220)
     , m_osdTimeout(1200)
     , m_fAutoHide(false)
@@ -444,8 +444,8 @@ void CTvtPlay::LoadSettings()
         m_swcClearEarly     = GetBufferedProfileInt(pBuf, TEXT("SlowerWithCaptionClearEarly"), -450);
         m_swcClearEarly     = min(max(m_swcClearEarly, -5000), 5000);
 #endif
-        m_osdFontSize       = GetBufferedProfileInt(pBuf, TEXT("OsdFontSize"), 48);
-        m_osdFontSize       = min(max(m_osdFontSize, 12), 120);
+        m_osdFontSizeRatio  = GetBufferedProfileInt(pBuf, TEXT("OsdFontSizeRatio"), 7);
+        m_osdFontSizeRatio  = min(max(m_osdFontSizeRatio, 1), 30);
         m_osdAlpha          = GetBufferedProfileInt(pBuf, TEXT("OsdAlpha"), 220);
         m_osdAlpha          = min(max(m_osdAlpha, 0), 255);
         m_osdTimeout        = GetBufferedProfileInt(pBuf, TEXT("OsdTimeout"), 1200);
@@ -604,7 +604,7 @@ void CTvtPlay::SaveSettings(bool fWriteDefault) const
 
     // 起動中に値を変えない設定値はfWriteDefaultのときだけ書く
     if (fWriteDefault) {
-        WritePrivateProfileInt(SETTINGS, TEXT("OsdFontSize"), m_osdFontSize, m_szIniFileName);
+        WritePrivateProfileInt(SETTINGS, TEXT("OsdFontSizeRatio"), m_osdFontSizeRatio, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("OsdAlpha"), m_osdAlpha, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("OsdTimeout"), m_osdTimeout, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("Version"), INFO_VERSION, m_szIniFileName);
@@ -963,14 +963,6 @@ bool CTvtPlay::EnablePlugin(bool fEnable) {
             if (!m_hwndOsd) return false;
 
             ::SetLayeredWindowAttributes(m_hwndOsd, 0, static_cast<BYTE>(m_osdAlpha), LWA_ALPHA);
-        }
-
-        if (!m_hfontOsd) {
-            LOGFONT lf;
-            m_statusView.GetFont(&lf);
-            lf.lfHeight = -m_osdFontSize;
-            lf.lfWeight = FW_BOLD;
-            m_hfontOsd = ::CreateFontIndirect(&lf);
         }
 
         CStatusItem *pItem = m_statusView.GetItemByID(STATUS_ITEM_POSITION);
@@ -1978,6 +1970,57 @@ void CTvtPlay::ShowSpeedOsd(int speed)
 
     _stprintf_s(m_szOsdText, TEXT("%d.%01dx"), speed / 100, (speed % 100) / 10);
 
+    // 映像領域の高さを取得してフォントサイズを算出
+    HWND hwndBase = m_pApp->GetFullscreen() ? GetFullscreenWindow() : m_pApp->GetAppWindow();
+    if (!hwndBase) hwndBase = m_pApp->GetAppWindow();
+
+    int areaHeight = 0;
+    HWND hwndVideo = ::FindWindowEx(hwndBase, nullptr, TEXT("TVTest View"), nullptr);
+    if (!hwndVideo) {
+        hwndVideo = ::FindWindowEx(hwndBase, nullptr, TEXT("TVTest Display"), nullptr);
+    }
+    if (hwndVideo) {
+        RECT rcVideo;
+        if (::GetClientRect(hwndVideo, &rcVideo)) {
+            areaHeight = rcVideo.bottom;
+        }
+    }
+    if (areaHeight <= 0) {
+        RECT rcClient;
+        if (::GetClientRect(hwndBase, &rcClient)) {
+            areaHeight = rcClient.bottom;
+        }
+    }
+    if (areaHeight <= 0) areaHeight = 480;
+
+    // 比率からフォントサイズ算出 (最小16, 最大200)
+    int fontSize = areaHeight * m_osdFontSizeRatio / 100;
+    fontSize = min(max(fontSize, 16), 200);
+
+    // フォントサイズが変わったら再生成
+    if (m_hfontOsd) {
+        LOGFONT lfCur;
+        if (::GetObject(m_hfontOsd, sizeof(lfCur), &lfCur) && lfCur.lfHeight == -fontSize) {
+            // サイズ変更なし
+        }
+        else {
+            ::DeleteObject(m_hfontOsd);
+            m_hfontOsd = nullptr;
+        }
+    }
+    if (!m_hfontOsd) {
+        LOGFONT lf = {};
+        lf.lfHeight = -fontSize;
+        lf.lfWeight = FW_BOLD;
+        lf.lfCharSet = DEFAULT_CHARSET;
+        lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
+        lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
+        lf.lfQuality = CLEARTYPE_QUALITY;
+        lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+        m_hfontOsd = ::CreateFontIndirect(&lf);
+    }
+
+    // テキストサイズを計測
     HDC hdc = ::GetDC(m_hwndOsd);
     if (hdc) {
         RECT rc = {0, 0, 0, 0};
@@ -2014,15 +2057,6 @@ void CTvtPlay::UpdateOsdPosition(int width, int height)
 {
     if (!m_hwndOsd) return;
 
-    HWND hwndBase = m_pApp->GetFullscreen() ? GetFullscreenWindow() : m_pApp->GetAppWindow();
-    if (!hwndBase) hwndBase = m_pApp->GetAppWindow();
-
-    RECT rc;
-    if (!::GetClientRect(hwndBase, &rc)) return;
-
-    POINT pt = {0, 0};
-    ::ClientToScreen(hwndBase, &pt);
-
     if (width < 0 || height < 0) {
         RECT rcOsd;
         if (!::GetWindowRect(m_hwndOsd, &rcOsd)) return;
@@ -2030,8 +2064,37 @@ void CTvtPlay::UpdateOsdPosition(int width, int height)
         height = rcOsd.bottom - rcOsd.top;
     }
 
-    int x = pt.x + (rc.right - width) / 2;
-    int y = pt.y + (rc.bottom - height) / 2;
+    // 映像表示ウィンドウを探す
+    HWND hwndBase = m_pApp->GetFullscreen() ? GetFullscreenWindow() : m_pApp->GetAppWindow();
+    if (!hwndBase) hwndBase = m_pApp->GetAppWindow();
+
+    // TVTestの映像表示部のクラス名で子ウィンドウを探す
+    HWND hwndVideo = ::FindWindowEx(hwndBase, nullptr, TEXT("TVTest View"), nullptr);
+    if (!hwndVideo) {
+        hwndVideo = ::FindWindowEx(hwndBase, nullptr, TEXT("TVTest Display"), nullptr);
+    }
+
+    RECT rc;
+    if (hwndVideo) {
+        // 映像表示部のスクリーン座標を取得
+        if (!::GetWindowRect(hwndVideo, &rc)) return;
+    }
+    else {
+        // 見つからなければクライアント領域で代用
+        if (!::GetClientRect(hwndBase, &rc)) return;
+        POINT pt = {0, 0};
+        ::ClientToScreen(hwndBase, &pt);
+        rc.left += pt.x;
+        rc.top += pt.y;
+        rc.right += pt.x;
+        rc.bottom += pt.y;
+    }
+
+    int areaWidth = rc.right - rc.left;
+    int areaHeight = rc.bottom - rc.top;
+
+    int x = rc.left + (areaWidth - width) / 2;
+    int y = rc.top + (areaHeight - height) / 2;
 
     ::SetWindowPos(
         m_hwndOsd,

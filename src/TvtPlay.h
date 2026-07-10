@@ -121,7 +121,7 @@ private:
     HWND m_hwndOsd;
     HFONT m_hfontOsd;
     TCHAR m_szOsdText[32];
-    int m_osdFontSize;
+    int m_osdFontSizeRatio;
     int m_osdAlpha;
     int m_osdTimeout;
     bool m_fAutoHide, m_fAutoHideActive;
