@@ -72,6 +72,9 @@ static const int INFO_VERSION = 26;
 
 static const TCHAR SETTINGS[] = TEXT("Settings");
 static const TCHAR TVTPLAY_FRAME_WINDOW_CLASS[] = TEXT("TvtPlay Frame");
+static const TCHAR TVTPLAY_OSD_WINDOW_CLASS[] = TEXT("TvtPlay OSD");
+static const int OSD_HIDE_TIMEOUT = 1200;
+static const int OSD_MARGIN = 24;
 
 enum {
     TIMER_ID_AUTO_HIDE = 1,
@@ -79,6 +82,7 @@ enum {
     TIMER_ID_UPDATE_HASH_LIST,
     TIMER_ID_SYNC_CHAPTER,
     TIMER_ID_WATCH_POS_GT,
+    TIMER_ID_OSD_HIDE,
 };
 
 static const TVTest::CommandInfo COMMAND_LIST[] = {
@@ -145,6 +149,8 @@ CTvtPlay::CTvtPlay()
     , m_fShowOpenDialog(false)
     , m_fRaisePriority(false)
     , m_hwndFrame(nullptr)
+    , m_hwndOsd(nullptr)
+    , m_hfontOsd(nullptr)
     , m_fAutoHide(false)
     , m_fAutoHideActive(false)
     , m_fHoveredFromOutside(false)
@@ -219,6 +225,7 @@ CTvtPlay::CTvtPlay()
     m_szSpecFileName[0] = 0;
     m_szIconFileName[0] = 0;
     m_szPopupPattern[0] = 0;
+    m_szOsdText[0] = 0;
     m_szChaptersDirName[0] = 0;
 #ifdef EN_SWC
     m_szCaptionDllPath[0] = 0;
@@ -747,6 +754,18 @@ void CTvtPlay::UpdateFileInfoSetting(const HASH_INFO &hashInfo, LONGLONG oldHash
 
 void CTvtPlay::StretchDelta(int delta)
 {
+    int currentSpeed;
+    {
+        lock_recursive_mutex lock(m_tsInfoLock);
+        currentSpeed = m_infoSpeed;
+    }
+
+    int newSpeed = min(max(currentSpeed + delta, 25), 800);
+    if (newSpeed != currentSpeed) {
+        StretchInternal(newSpeed, true);
+    }
+}
+{
     // 現在の速度を取得
     int currentSpeed = m_infoSpeed;
     
@@ -764,6 +783,9 @@ void CTvtPlay::StretchDelta(int delta)
 
 // 既存の Stretch(int stretchID) とは別に、直接速度値を指定する関数
 void CTvtPlay::StretchDirect(int speed)
+{
+    StretchInternal(speed, true);
+}
 {
     bool fMute = speed < m_noMuteMin || m_noMuteMax < speed;
     int lowSpeed = speed;
@@ -794,6 +816,14 @@ bool CTvtPlay::InitializePlugin()
     wc.hbrBackground    = (HBRUSH)GetStockObject(BLACK_BRUSH);
     wc.lpszClassName    = TVTPLAY_FRAME_WINDOW_CLASS;
     if (!::RegisterClass(&wc)) return false;
+
+    WNDCLASS wcOsd = {};
+    wcOsd.style            = CS_HREDRAW | CS_VREDRAW;
+    wcOsd.lpfnWndProc      = OsdWindowProc;
+    wcOsd.hInstance        = g_hinstDLL;
+    wcOsd.hbrBackground    = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wcOsd.lpszClassName    = TVTPLAY_OSD_WINDOW_CLASS;
+    if (!::RegisterClass(&wcOsd)) return false;
 
     LoadSettings();
 
@@ -939,6 +969,35 @@ bool CTvtPlay::EnablePlugin(bool fEnable) {
         }
         m_statusView.SetEventHandler(&m_eventHandler);
 
+        if (!m_hwndOsd) {
+            m_hwndOsd = ::CreateWindowEx(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+                TVTPLAY_OSD_WINDOW_CLASS,
+                nullptr,
+                WS_POPUP,
+                0, 0, 0, 0,
+                m_pApp->GetAppWindow(),
+                nullptr,
+                g_hinstDLL,
+                this);
+            if (!m_hwndOsd) return false;
+
+            ::SetLayeredWindowAttributes(m_hwndOsd, 0, 220, LWA_ALPHA);
+        }
+
+        if (!m_hfontOsd) {
+            LOGFONT lf;
+            m_statusView.GetFont(&lf);
+            if (lf.lfHeight < 0) {
+                lf.lfHeight *= 2;
+            }
+            else {
+                lf.lfHeight = -24;
+            }
+            lf.lfWeight = FW_BOLD;
+            m_hfontOsd = ::CreateFontIndirect(&lf);
+        }
+
         CStatusItem *pItem = m_statusView.GetItemByID(STATUS_ITEM_POSITION);
         if (pItem) {
             if (m_posItemWidth < 0) {
@@ -978,6 +1037,18 @@ bool CTvtPlay::EnablePlugin(bool fEnable) {
             m_captionAnalyzer.UnInitialize();
         }
 #endif
+        HideSpeedOsd();
+
+        if (m_hfontOsd) {
+            ::DeleteObject(m_hfontOsd);
+            m_hfontOsd = nullptr;
+        }
+
+        if (m_hwndOsd) {
+            ::DestroyWindow(m_hwndOsd);
+            m_hwndOsd = nullptr;
+        }
+
         if (m_hwndFrame) {
             m_statusView.SetEventHandler(nullptr);
             m_statusView.Destroy();
@@ -1736,7 +1807,9 @@ bool CTvtPlay::Open(LPCTSTR fileName, int offset, int stretchID)
 
     // 初期再生速度を設定
     if (stretchID >= 0) m_initialStretchID = stretchID;
-    if (m_initialStretchID >= 0) Stretch(m_initialStretchID);
+    if (m_initialStretchID >= 0 && m_initialStretchID < m_stretchListNum) {
+        StretchInternal(m_stretchList[m_initialStretchID], false);
+    }
 
     // TVTestに変数登録
     TVTest::RegisterVariableInfo rvi;
@@ -1900,6 +1973,92 @@ void CTvtPlay::SetRepeatFlags(bool fAllRepeat, bool fSingleRepeat)
 }
 
 int CTvtPlay::GetStretchID()
+void CTvtPlay::StretchInternal(int speed, bool fShowOsd)
+{
+    speed = min(max(speed, 25), 800);
+
+    int lowSpeed = speed;
+#ifdef EN_SWC
+    // 字幕表示中の速度を計算
+    lowSpeed = m_slowerWithCaption > 0 ? speed * m_slowerWithCaption / 100 :
+               m_slowerWithCaption < 0 ? -m_slowerWithCaption : speed;
+    // 切り替え時のプチノイズ防止のため101
+    lowSpeed = min(max(lowSpeed, 101), speed);
+#endif
+
+    bool fMute = speed < m_noMuteMin || m_noMuteMax < speed;
+    if (m_hThread) {
+        ::PostThreadMessage(m_threadID, WM_TS_SET_SPEED,
+                            (fMute ? 4 : 0) | m_stretchMode,
+                            MAKELPARAM(speed, lowSpeed));
+    }
+
+    if (fShowOsd) {
+        ShowSpeedOsd(speed);
+    }
+}
+
+void CTvtPlay::ShowSpeedOsd(int speed)
+{
+    if (!m_hwndOsd) return;
+
+    _stprintf_s(m_szOsdText, TEXT("%d.%01dx"), speed / 100, (speed % 100) / 10);
+
+    HDC hdc = ::GetDC(m_hwndOsd);
+    if (hdc) {
+        RECT rc = {0, 0, 0, 0};
+        HFONT hOld = SelectFont(hdc, m_hfontOsd ? m_hfontOsd : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+        ::DrawText(hdc, m_szOsdText, -1, &rc, DT_SINGLELINE | DT_CALCRECT);
+        SelectFont(hdc, hOld);
+        ::ReleaseDC(m_hwndOsd, hdc);
+
+        int width = (rc.right - rc.left) + 24;
+        int height = (rc.bottom - rc.top) + 16;
+
+        UpdateOsdPosition(width, height);
+    }
+
+    ::InvalidateRect(m_hwndOsd, nullptr, TRUE);
+    ::ShowWindow(m_hwndOsd, SW_SHOWNOACTIVATE);
+
+    ::KillTimer(m_hwndOsd, TIMER_ID_OSD_HIDE);
+    ::SetTimer(m_hwndOsd, TIMER_ID_OSD_HIDE, OSD_HIDE_TIMEOUT, nullptr);
+}
+
+void CTvtPlay::HideSpeedOsd()
+{
+    if (!m_hwndOsd) return;
+    ::KillTimer(m_hwndOsd, TIMER_ID_OSD_HIDE);
+    ::ShowWindow(m_hwndOsd, SW_HIDE);
+}
+
+void CTvtPlay::UpdateOsdPosition(int width, int height)
+{
+    if (!m_hwndOsd) return;
+
+    HWND hwndBase = m_pApp->GetFullscreen() ? GetFullscreenWindow() : m_pApp->GetAppWindow();
+    if (!hwndBase) hwndBase = m_pApp->GetAppWindow();
+
+    RECT rc;
+    if (!::GetWindowRect(hwndBase, &rc)) return;
+
+    if (width < 0 || height < 0) {
+        RECT rcOsd;
+        if (!::GetWindowRect(m_hwndOsd, &rcOsd)) return;
+        width = rcOsd.right - rcOsd.left;
+        height = rcOsd.bottom - rcOsd.top;
+    }
+
+    int x = rc.right - width - OSD_MARGIN;
+    int y = rc.top + OSD_MARGIN;
+
+    ::SetWindowPos(
+        m_hwndOsd,
+        HWND_TOPMOST,
+        x, y,
+        width, height,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
 {
     lock_recursive_mutex lock(m_tsInfoLock);
     if (m_infoSpeed == 100) return -1;
@@ -1913,18 +2072,7 @@ void CTvtPlay::Stretch(int stretchID)
 {
     int speed = 0 <= stretchID && stretchID < m_stretchListNum ?
                 m_stretchList[stretchID] : 100;
-    int lowSpeed = speed;
-#ifdef EN_SWC
-    // 字幕表示中の速度を計算
-    lowSpeed = m_slowerWithCaption > 0 ? speed * m_slowerWithCaption / 100 :
-               m_slowerWithCaption < 0 ? -m_slowerWithCaption : speed;
-    // 切り替え時のプチノイズ防止のため101
-    lowSpeed = min(max(lowSpeed, 101), speed);
-#endif
-
-    // 速度が設定値より大or小のときはミュートフラグをつける
-    bool fMute = speed < m_noMuteMin || m_noMuteMax < speed;
-    if (m_hThread) ::PostThreadMessage(m_threadID, WM_TS_SET_SPEED, (fMute?4:0)|m_stretchMode, MAKELPARAM(speed, lowSpeed));
+    StretchInternal(speed, true);
 }
 
 // 再生位置から直近のチャプターの監視を開始する
@@ -1998,6 +2146,9 @@ void CTvtPlay::OnResize(bool fInit)
         ::SetWindowPos(m_hwndFrame, nullptr, rect.left, rect.top,
                        rect.right-rect.left, rect.bottom-rect.top, SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    if (m_hwndOsd && ::IsWindowVisible(m_hwndOsd)) {
+        UpdateOsdPosition();
+    }
 }
 
 void CTvtPlay::OnDispModeChange(bool fStandy, bool fInit)
@@ -2016,6 +2167,7 @@ void CTvtPlay::OnDispModeChange(bool fStandy, bool fInit)
     if (fStandy) {
         // 待機状態
         ::ShowWindow(m_hwndFrame, SW_HIDE);
+        HideSpeedOsd();
         // ファイルが開かれていれば閉じる
         Close();
     }
@@ -2445,7 +2597,12 @@ LRESULT CALLBACK CTvtPlay::EventCallback(UINT Event, LPARAM lParam1, LPARAM lPar
         // フィルタグラフの終了処理終了
         if (pThis->m_pApp->IsPluginEnabled()) {
             // つぎの初期化後にフィルタの再生速度を再設定するため
-            pThis->Stretch(pThis->GetStretchID());
+            int speed;
+            {
+                lock_recursive_mutex lock(pThis->m_tsInfoLock);
+                speed = pThis->m_infoSpeed;
+            }
+            pThis->StretchInternal(speed, false);
         }
         break;
     }
@@ -2470,6 +2627,9 @@ BOOL CALLBACK CTvtPlay::WindowMsgCallback(HWND hwnd, UINT uMsg, WPARAM wParam, L
             if (pThis->CalcStatusRect(&rect)) {
                 ::SetWindowPos(pThis->m_hwndFrame, nullptr, rect.left, rect.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             }
+        }
+        if (pThis->m_hwndOsd && ::IsWindowVisible(pThis->m_hwndOsd)) {
+            pThis->UpdateOsdPosition();
         }
         break;
     case WM_DROPFILES:
@@ -2520,6 +2680,54 @@ BOOL CALLBACK CTvtPlay::WindowMsgCallback(HWND hwnd, UINT uMsg, WPARAM wParam, L
 
 
 // コントロールのウインドウプロシージャ
+LRESULT CALLBACK CTvtPlay::OsdWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    CTvtPlay *pThis = reinterpret_cast<CTvtPlay*>(::GetWindowLongPtr(hwnd, GWLP_USERDATA));
+
+    switch (uMsg) {
+    case WM_CREATE:
+        {
+            LPCREATESTRUCT pcs = reinterpret_cast<LPCREATESTRUCT>(lParam);
+            pThis = static_cast<CTvtPlay*>(pcs->lpCreateParams);
+            ::SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+        }
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == TIMER_ID_OSD_HIDE) {
+            ::KillTimer(hwnd, TIMER_ID_OSD_HIDE);
+            ::ShowWindow(hwnd, SW_HIDE);
+            return 0;
+        }
+        break;
+
+    case WM_ERASEBKGND:
+        return TRUE;
+
+    case WM_PAINT:
+        if (pThis) {
+            PAINTSTRUCT ps;
+            HDC hdc = ::BeginPaint(hwnd, &ps);
+
+            RECT rc;
+            ::GetClientRect(hwnd, &rc);
+            ::FillRect(hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+
+            ::SetBkMode(hdc, TRANSPARENT);
+            ::SetTextColor(hdc, RGB(255, 255, 255));
+
+            HFONT hOld = SelectFont(hdc, pThis->m_hfontOsd ? pThis->m_hfontOsd : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+            ::DrawText(hdc, pThis->m_szOsdText, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SelectFont(hdc, hOld);
+
+            ::EndPaint(hwnd, &ps);
+            return 0;
+        }
+        break;
+    }
+    return ::DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
 LRESULT CALLBACK CTvtPlay::FrameWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     // WM_CREATEのとき不定

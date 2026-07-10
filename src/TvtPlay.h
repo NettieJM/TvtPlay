@@ -78,6 +78,12 @@ private:
     void SetModTimestamp(bool fModTimestamp);
     void SetRepeatFlags(bool fAllRepeat, bool fSingleRepeat);
     void Stretch(int stretchID);
+    void StretchDirect(int speed);
+    void StretchDelta(int delta);
+    void StretchInternal(int speed, bool fShowOsd);
+    void ShowSpeedOsd(int speed);
+    void HideSpeedOsd();
+    void UpdateOsdPosition(int width = -1, int height = -1);
     void BeginWatchingNextChapter(bool fDoDelay);
     bool CalcStatusRect(RECT *pRect, bool fInit = false);
     void OnResize(bool fInit = false);
@@ -88,6 +94,7 @@ private:
     void OnPreviewChange(bool fPreview);
     static LRESULT CALLBACK EventCallback(UINT Event, LPARAM lParam1, LPARAM lParam2, void *pClientData);
     static BOOL CALLBACK WindowMsgCallback(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT *pResult, void *pUserData);
+    static LRESULT CALLBACK OsdWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK FrameWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
     void UpdateInfos();
     static unsigned int __stdcall TsSenderThread(LPVOID pParam);
@@ -111,6 +118,9 @@ private:
 
     // コントロール
     HWND m_hwndFrame;
+    HWND m_hwndOsd;
+    HFONT m_hfontOsd;
+    TCHAR m_szOsdText[32];
     bool m_fAutoHide, m_fAutoHideActive;
     bool m_fHoveredFromOutside;
     int m_statusRow, m_statusRowFull;
