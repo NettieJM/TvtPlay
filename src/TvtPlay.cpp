@@ -107,6 +107,7 @@ static const TVTest::CommandInfo COMMAND_LIST[] = {
     {ID_COMMAND_STRETCH_UP, L"StretchUp", L"倍速: ＋10%（0.1倍）速く"},
     {ID_COMMAND_STRETCH_DOWN, L"StretchDown", L"倍速: －10%（0.1倍）遅く"},
     {ID_COMMAND_STRETCH_RESET, L"StretchReset", L"倍速: 等速(100%)に戻す"},
+    {ID_COMMAND_COPY_TIME_TITLE, L"CopyTimeTitle", L"再生位置とファイル名をコピー&保存"},
 };
 
 static const int DEFAULT_SEEK_LIST[COMMAND_S_MAX] = {
@@ -228,6 +229,9 @@ CTvtPlay::CTvtPlay()
     m_szIconFileName[0] = 0;
     m_szPopupPattern[0] = 0;
     m_szOsdText[0] = 0;
+    m_szTimestampFilePath[0] = 0;
+    m_szLastRecordedTitle[0] = 0;
+    m_timestampMode = 2;
     m_szChaptersDirName[0] = 0;
 #ifdef EN_SWC
     m_szCaptionDllPath[0] = 0;
@@ -445,6 +449,16 @@ void CTvtPlay::LoadSettings()
         m_swcClearEarly     = min(max(m_swcClearEarly, -5000), 5000);
 #endif
         m_osdFontSizeRatio  = GetBufferedProfileInt(pBuf, TEXT("OsdFontSizeRatio"), 7);
+        // 0=無効, 1=クリップボードのみ, 2=クリップボード+ファイル書き込み
+        m_timestampMode     = GetBufferedProfileInt(pBuf, TEXT("TimestampMode"), 2);
+        m_timestampMode     = min(max(m_timestampMode, 0), 2);
+        GetBufferedProfileString(pBuf, TEXT("TimestampFile"), TEXT(""), m_szTimestampFilePath, _countof(m_szTimestampFilePath));
+        if (!m_szTimestampFilePath[0]) {
+            // デフォルト: プラグインiniと同じフォルダにtimestamps.txt
+            _tcscpy_s(m_szTimestampFilePath, m_szIniFileName);
+            ::PathRemoveFileSpec(m_szTimestampFilePath);
+            ::PathAppend(m_szTimestampFilePath, TEXT("timestamps.txt"));
+        }
         m_osdFontSizeRatio  = min(max(m_osdFontSizeRatio, 1), 30);
         m_osdAlpha          = GetBufferedProfileInt(pBuf, TEXT("OsdAlpha"), 220);
         m_osdAlpha          = min(max(m_osdAlpha, 0), 255);
@@ -479,6 +493,31 @@ void CTvtPlay::LoadSettings()
             _stprintf_s(key, TEXT("Button%02d"), i);
             GetBufferedProfileString(pBuf, key, DEFAULT_BUTTON_LIST[j] ? DEFAULT_BUTTON_LIST[j++] : TEXT(""),
                                      m_buttonList[i], _countof(m_buttonList[0]));
+        }
+    }
+
+    // タイムスタンプファイルから前回のタイトルを復元
+    if (m_szTimestampFilePath[0]) {
+        FILE *fp = nullptr;
+        if (!_tfopen_s(&fp, m_szTimestampFilePath, TEXT("r, ccs=UTF-8")) && fp) {
+            TCHAR line[512];
+            TCHAR lastLine[512] = {};
+            while (_fgetts(line, _countof(line), fp)) {
+                // 末尾の改行を除去
+                size_t len = _tcslen(line);
+                while (len > 0 && (line[len-1] == TEXT('\n') || line[len-1] == TEXT('\r'))) {
+                    line[--len] = 0;
+                }
+                if (len > 0) {
+                    _tcscpy_s(lastLine, line);
+                }
+            }
+            fclose(fp);
+            // "[00:01:23] タイトル" から "] " の後ろを抽出
+            LPCTSTR pTitle = _tcsstr(lastLine, TEXT("] "));
+            if (pTitle) {
+                _tcscpy_s(m_szLastRecordedTitle, pTitle + 2);
+            }
         }
     }
 
@@ -604,6 +643,8 @@ void CTvtPlay::SaveSettings(bool fWriteDefault) const
 
     // 起動中に値を変えない設定値はfWriteDefaultのときだけ書く
     if (fWriteDefault) {
+        WritePrivateProfileInt(SETTINGS, TEXT("TimestampMode"), m_timestampMode, m_szIniFileName);
+        ::WritePrivateProfileString(SETTINGS, TEXT("TimestampFile"), m_szTimestampFilePath, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("OsdFontSizeRatio"), m_osdFontSizeRatio, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("OsdAlpha"), m_osdAlpha, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("OsdTimeout"), m_osdTimeout, m_szIniFileName);
@@ -775,6 +816,163 @@ void CTvtPlay::StretchDelta(int delta)
     if (newSpeed != currentSpeed) {
         StretchInternal(newSpeed, true);
     }
+}
+
+void CTvtPlay::CopyTimeTitle()
+{
+    if (!IsOpen() || m_playlist.Get().empty()) {
+        ShowSpeedOsd(0); // 何も開いていない
+        return;
+    }
+
+    int pos = GetPosition();
+    if (pos < 0) pos = 0;
+
+    int h = pos / 3600000;
+    int m = (pos / 60000) % 60;
+    int s = (pos / 1000) % 60;
+
+    LPCTSTR filePath = m_playlist.Get()[m_playlist.GetPosition()].path;
+    LPCTSTR fileName = ::PathFindFileName(filePath);
+
+    TCHAR text[1024];
+    _stprintf_s(text, TEXT("[%02d:%02d:%02d] %s"), h, m, s, fileName);
+
+    // クリップボードにコピー
+    if (m_timestampMode >= 1) {
+        CopyToClipboard(text);
+    }
+
+    // ファイルに追記
+    if (m_timestampMode >= 2) {
+        AppendToTimestampFile(text, fileName);
+    }
+
+    // OSD通知 (時刻部分だけ表示)
+    _stprintf_s(m_szOsdText, TEXT("Saved %02d:%02d:%02d"), h, m, s);
+
+    // OSD表示 (ShowSpeedOsdと同じ流れ)
+    if (m_hwndOsd) {
+        HWND hwndBase = m_pApp->GetFullscreen() ? GetFullscreenWindow() : m_pApp->GetAppWindow();
+        if (!hwndBase) hwndBase = m_pApp->GetAppWindow();
+
+        int areaHeight = 0;
+        HWND hwndVideo = ::FindWindowEx(hwndBase, nullptr, TEXT("TVTest View"), nullptr);
+        if (!hwndVideo) {
+            hwndVideo = ::FindWindowEx(hwndBase, nullptr, TEXT("TVTest Display"), nullptr);
+        }
+        if (hwndVideo) {
+            RECT rcVideo;
+            if (::GetClientRect(hwndVideo, &rcVideo)) {
+                areaHeight = rcVideo.bottom;
+            }
+        }
+        if (areaHeight <= 0) {
+            RECT rcClient;
+            if (::GetClientRect(hwndBase, &rcClient)) {
+                areaHeight = rcClient.bottom;
+            }
+        }
+        if (areaHeight <= 0) areaHeight = 480;
+
+        int fontSize = areaHeight * m_osdFontSizeRatio / 100;
+        fontSize = min(max(fontSize, 16), 200);
+
+        if (m_hfontOsd) {
+            LOGFONT lfCur;
+            if (::GetObject(m_hfontOsd, sizeof(lfCur), &lfCur) && lfCur.lfHeight == -fontSize) {
+                // サイズ変更なし
+            }
+            else {
+                ::DeleteObject(m_hfontOsd);
+                m_hfontOsd = nullptr;
+            }
+        }
+        if (!m_hfontOsd) {
+            LOGFONT lf = {};
+            lf.lfHeight = -fontSize;
+            lf.lfWeight = FW_BOLD;
+            lf.lfCharSet = DEFAULT_CHARSET;
+            lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
+            lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
+            lf.lfQuality = CLEARTYPE_QUALITY;
+            lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+            m_hfontOsd = ::CreateFontIndirect(&lf);
+        }
+
+        HDC hdc = ::GetDC(m_hwndOsd);
+        if (hdc) {
+            RECT rc = {0, 0, 0, 0};
+            HFONT hOld = SelectFont(hdc, m_hfontOsd ? m_hfontOsd : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+            ::DrawText(hdc, m_szOsdText, -1, &rc, DT_SINGLELINE | DT_CALCRECT);
+            SelectFont(hdc, hOld);
+            ::ReleaseDC(m_hwndOsd, hdc);
+
+            int textWidth = rc.right - rc.left;
+            int textHeight = rc.bottom - rc.top;
+            int padX = textHeight / 2;
+            int padY = textHeight / 4;
+            int width = textWidth + padX * 2;
+            int height = textHeight + padY * 2;
+
+            UpdateOsdPosition(width, height);
+        }
+
+        ::InvalidateRect(m_hwndOsd, nullptr, TRUE);
+        ::ShowWindow(m_hwndOsd, SW_SHOWNOACTIVATE);
+
+        ::KillTimer(m_hwndOsd, TIMER_ID_OSD_HIDE);
+        ::SetTimer(m_hwndOsd, TIMER_ID_OSD_HIDE, m_osdTimeout, nullptr);
+    }
+}
+
+void CTvtPlay::CopyToClipboard(LPCTSTR text)
+{
+    if (!m_hwndFrame) return;
+
+    if (::OpenClipboard(m_hwndFrame)) {
+        if (::EmptyClipboard()) {
+            size_t len = _tcslen(text);
+            HGLOBAL hg = ::GlobalAlloc(GMEM_MOVEABLE, (len + 1) * sizeof(TCHAR));
+            if (hg) {
+                LPTSTR clip = reinterpret_cast<LPTSTR>(::GlobalLock(hg));
+                if (clip) {
+                    _tcscpy_s(clip, len + 1, text);
+                    ::GlobalUnlock(hg);
+                    if (!::SetClipboardData(CF_UNICODETEXT, hg)) {
+                        ::GlobalFree(hg);
+                    }
+                }
+                else {
+                    ::GlobalFree(hg);
+                }
+            }
+        }
+        ::CloseClipboard();
+    }
+}
+
+void CTvtPlay::AppendToTimestampFile(LPCTSTR text, LPCTSTR title)
+{
+    if (!m_szTimestampFilePath[0]) return;
+
+    FILE *fp = nullptr;
+    if (_tfopen_s(&fp, m_szTimestampFilePath, TEXT("a, ccs=UTF-8")) || !fp) {
+        return;
+    }
+
+    // 前回と異なるタイトルなら空行を挟む
+    if (m_szLastRecordedTitle[0] && _tcsicmp(m_szLastRecordedTitle, title) != 0) {
+        _fputts(TEXT("\n"), fp);
+    }
+
+    _fputts(text, fp);
+    _fputts(TEXT("\n"), fp);
+
+    fclose(fp);
+
+    // 前回タイトルを更新
+    _tcscpy_s(m_szLastRecordedTitle, title);
 }
 
 // 既存の Stretch(int stretchID) とは別に、直接速度値を指定する関数
@@ -2537,6 +2735,9 @@ void CTvtPlay::OnCommand(int id, const POINT *pPt, UINT flags)
         break;
     case ID_COMMAND_STRETCH_RESET:
         StretchDirect(100);
+        break;
+    case ID_COMMAND_COPY_TIME_TITLE:
+        CopyTimeTitle();
         break;
     default:
         if (ID_COMMAND_SEEK_A <= id && id < ID_COMMAND_SEEK_A + m_seekListNum) {

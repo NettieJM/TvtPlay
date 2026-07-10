@@ -84,6 +84,9 @@ private:
     void ShowSpeedOsd(int speed);
     void HideSpeedOsd();
     void UpdateOsdPosition(int width = -1, int height = -1);
+    void CopyTimeTitle();
+    void CopyToClipboard(LPCTSTR text);
+    void AppendToTimestampFile(LPCTSTR text, LPCTSTR title);
     void BeginWatchingNextChapter(bool fDoDelay);
     bool CalcStatusRect(RECT *pRect, bool fInit = false);
     void OnResize(bool fInit = false);
@@ -122,8 +125,11 @@ private:
     HFONT m_hfontOsd;
     TCHAR m_szOsdText[32];
     int m_osdFontSizeRatio;
-    int m_osdAlpha;
+    int m_osdAlpha;f
     int m_osdTimeout;
+    TCHAR m_szTimestampFilePath[MAX_PATH];
+    TCHAR m_szLastRecordedTitle[MAX_PATH];
+    int m_timestampMode;
     bool m_fAutoHide, m_fAutoHideActive;
     bool m_fHoveredFromOutside;
     int m_statusRow, m_statusRowFull;
