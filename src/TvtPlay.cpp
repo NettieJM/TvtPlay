@@ -73,7 +73,6 @@ static const int INFO_VERSION = 26;
 static const TCHAR SETTINGS[] = TEXT("Settings");
 static const TCHAR TVTPLAY_FRAME_WINDOW_CLASS[] = TEXT("TvtPlay Frame");
 static const TCHAR TVTPLAY_OSD_WINDOW_CLASS[] = TEXT("TvtPlay OSD");
-static const int OSD_HIDE_TIMEOUT = 1200;
 static const int OSD_MARGIN = 24;
 
 enum {
@@ -151,6 +150,9 @@ CTvtPlay::CTvtPlay()
     , m_hwndFrame(nullptr)
     , m_hwndOsd(nullptr)
     , m_hfontOsd(nullptr)
+    , m_osdFontSize(48)
+    , m_osdAlpha(220)
+    , m_osdTimeout(1200)
     , m_fAutoHide(false)
     , m_fAutoHideActive(false)
     , m_fHoveredFromOutside(false)
@@ -442,6 +444,12 @@ void CTvtPlay::LoadSettings()
         m_swcClearEarly     = GetBufferedProfileInt(pBuf, TEXT("SlowerWithCaptionClearEarly"), -450);
         m_swcClearEarly     = min(max(m_swcClearEarly, -5000), 5000);
 #endif
+        m_osdFontSize       = GetBufferedProfileInt(pBuf, TEXT("OsdFontSize"), 48);
+        m_osdFontSize       = min(max(m_osdFontSize, 12), 120);
+        m_osdAlpha          = GetBufferedProfileInt(pBuf, TEXT("OsdAlpha"), 220);
+        m_osdAlpha          = min(max(m_osdAlpha, 0), 255);
+        m_osdTimeout        = GetBufferedProfileInt(pBuf, TEXT("OsdTimeout"), 1200);
+        m_osdTimeout        = min(max(m_osdTimeout, 200), 10000);
         m_seekItemOrder     = GetBufferedProfileInt(pBuf, TEXT("SeekItemOrder"), 99);
         m_posItemOrder      = GetBufferedProfileInt(pBuf, TEXT("StatusItemOrder"), 99);
         GetBufferedProfileString(pBuf, TEXT("IconImage"), TEXT(""), m_szIconFileName, _countof(m_szIconFileName));
@@ -596,6 +604,9 @@ void CTvtPlay::SaveSettings(bool fWriteDefault) const
 
     // 起動中に値を変えない設定値はfWriteDefaultのときだけ書く
     if (fWriteDefault) {
+        WritePrivateProfileInt(SETTINGS, TEXT("OsdFontSize"), m_osdFontSize, m_szIniFileName);
+        WritePrivateProfileInt(SETTINGS, TEXT("OsdAlpha"), m_osdAlpha, m_szIniFileName);
+        WritePrivateProfileInt(SETTINGS, TEXT("OsdTimeout"), m_osdTimeout, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("Version"), INFO_VERSION, m_szIniFileName);
         TCHAR val[2];
         ::GetPrivateProfileString(SETTINGS, TEXT("TvtpCmdOption"), TEXT("!"), val, _countof(val), m_szIniFileName);
@@ -951,18 +962,13 @@ bool CTvtPlay::EnablePlugin(bool fEnable) {
                 this);
             if (!m_hwndOsd) return false;
 
-            ::SetLayeredWindowAttributes(m_hwndOsd, 0, 220, LWA_ALPHA);
+            ::SetLayeredWindowAttributes(m_hwndOsd, 0, static_cast<BYTE>(m_osdAlpha), LWA_ALPHA);
         }
 
         if (!m_hfontOsd) {
             LOGFONT lf;
             m_statusView.GetFont(&lf);
-            if (lf.lfHeight < 0) {
-                lf.lfHeight *= 4;
-            }
-            else {
-                lf.lfHeight = -48;
-            }
+            lf.lfHeight = -m_osdFontSize;
             lf.lfWeight = FW_BOLD;
             m_hfontOsd = ::CreateFontIndirect(&lf);
         }
@@ -1980,8 +1986,12 @@ void CTvtPlay::ShowSpeedOsd(int speed)
         SelectFont(hdc, hOld);
         ::ReleaseDC(m_hwndOsd, hdc);
 
-        int width = (rc.right - rc.left) + 24;
-        int height = (rc.bottom - rc.top) + 16;
+        int textWidth = rc.right - rc.left;
+        int textHeight = rc.bottom - rc.top;
+        int padX = textHeight / 2;
+        int padY = textHeight / 4;
+        int width = textWidth + padX * 2;
+        int height = textHeight + padY * 2;
 
         UpdateOsdPosition(width, height);
     }
@@ -1990,7 +2000,7 @@ void CTvtPlay::ShowSpeedOsd(int speed)
     ::ShowWindow(m_hwndOsd, SW_SHOWNOACTIVATE);
 
     ::KillTimer(m_hwndOsd, TIMER_ID_OSD_HIDE);
-    ::SetTimer(m_hwndOsd, TIMER_ID_OSD_HIDE, OSD_HIDE_TIMEOUT, nullptr);
+    ::SetTimer(m_hwndOsd, TIMER_ID_OSD_HIDE, m_osdTimeout, nullptr);
 }
 
 void CTvtPlay::HideSpeedOsd()

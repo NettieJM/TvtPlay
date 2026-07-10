@@ -121,6 +121,9 @@ private:
     HWND m_hwndOsd;
     HFONT m_hfontOsd;
     TCHAR m_szOsdText[32];
+    int m_osdFontSize;
+    int m_osdAlpha;
+    int m_osdTimeout;
     bool m_fAutoHide, m_fAutoHideActive;
     bool m_fHoveredFromOutside;
     int m_statusRow, m_statusRowFull;
