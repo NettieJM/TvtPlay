@@ -101,6 +101,9 @@ static const TVTest::CommandInfo COMMAND_LIST[] = {
     {ID_COMMAND_STRETCH, L"Stretch", L"倍速:切り替え"},
     {ID_COMMAND_STRETCH_RE, L"StretchRe", L"倍速:逆順切り替え"},
     {ID_COMMAND_STRETCH_POPUP, L"StretchPopup", L"倍速:ポップアップ"},
+    {ID_COMMAND_STRETCH_UP, L"StretchUp", L"倍速: ＋10%（0.1倍）速く"},
+    {ID_COMMAND_STRETCH_DOWN, L"StretchDown", L"倍速: －10%（0.1倍）遅く"},
+    {ID_COMMAND_STRETCH_RESET, L"StretchReset", L"倍速: 等速(100%)に戻す"},
 };
 
 static const int DEFAULT_SEEK_LIST[COMMAND_S_MAX] = {
@@ -742,6 +745,41 @@ void CTvtPlay::UpdateFileInfoSetting(const HASH_INFO &hashInfo, LONGLONG oldHash
     }
 }
 
+void CTvtPlay::StretchDelta(int delta)
+{
+    // 現在の速度を取得
+    int currentSpeed = m_infoSpeed;
+    
+    // 10%単位で増減 (例: 130 + 10 = 140)
+    int newSpeed = currentSpeed + delta;
+    
+    // 上限・下限の制限 (25% ～ 800% など)
+    newSpeed = max(25, min(800, newSpeed));
+    
+    if (currentSpeed != newSpeed) {
+        StretchDirect(newSpeed); // 直接速度を設定
+        ShowOSD(newSpeed);       // OSDを表示
+    }
+}
+
+// 既存の Stretch(int stretchID) とは別に、直接速度値を指定する関数
+void CTvtPlay::StretchDirect(int speed)
+{
+    bool fMute = speed < m_noMuteMin || m_noMuteMax < speed;
+    int lowSpeed = speed;
+
+#ifdef EN_SWC
+    // 字幕でゆっくり機能の計算（既存コード流用）
+    lowSpeed = m_slowerWithCaption > 0 ? speed * m_slowerWithCaption / 100 :
+               m_slowerWithCaption < 0 ? -m_slowerWithCaption : speed;
+    lowSpeed = min(max(lowSpeed, 101), speed);
+#endif
+
+    if (m_hThread) {
+        // スレッドへ直接新しい速度を投げる
+        ::PostThreadMessage(m_threadID, WM_TS_SET_SPEED, (fMute?4:0)|m_stretchMode, MAKELPARAM(speed, lowSpeed));
+    }
+}
 
 // プラグインが有効にされた時の初期化処理
 bool CTvtPlay::InitializePlugin()
@@ -2292,6 +2330,16 @@ void CTvtPlay::OnCommand(int id, const POINT *pPt, UINT flags)
                 Stretch(stid - 1);
             }
         }
+        break;
+    case ID_COMMAND_STRETCH_UP:
+        StretchDelta(10);
+        break;
+    case ID_COMMAND_STRETCH_DOWN:
+        StretchDelta(-10);
+        break;
+    case ID_COMMAND_STRETCH_RESET:
+        StretchDirect(100);
+        ShowOSD(100);
         break;
     default:
         if (ID_COMMAND_SEEK_A <= id && id < ID_COMMAND_SEEK_A + m_seekListNum) {
