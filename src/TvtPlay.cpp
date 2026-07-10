@@ -765,42 +765,11 @@ void CTvtPlay::StretchDelta(int delta)
         StretchInternal(newSpeed, true);
     }
 }
-{
-    // 現在の速度を取得
-    int currentSpeed = m_infoSpeed;
-    
-    // 10%単位で増減 (例: 130 + 10 = 140)
-    int newSpeed = currentSpeed + delta;
-    
-    // 上限・下限の制限 (25% ～ 800% など)
-    newSpeed = max(25, min(800, newSpeed));
-    
-    if (currentSpeed != newSpeed) {
-        StretchDirect(newSpeed); // 直接速度を設定
-        ShowOSD(newSpeed);       // OSDを表示
-    }
-}
 
 // 既存の Stretch(int stretchID) とは別に、直接速度値を指定する関数
 void CTvtPlay::StretchDirect(int speed)
 {
     StretchInternal(speed, true);
-}
-{
-    bool fMute = speed < m_noMuteMin || m_noMuteMax < speed;
-    int lowSpeed = speed;
-
-#ifdef EN_SWC
-    // 字幕でゆっくり機能の計算（既存コード流用）
-    lowSpeed = m_slowerWithCaption > 0 ? speed * m_slowerWithCaption / 100 :
-               m_slowerWithCaption < 0 ? -m_slowerWithCaption : speed;
-    lowSpeed = min(max(lowSpeed, 101), speed);
-#endif
-
-    if (m_hThread) {
-        // スレッドへ直接新しい速度を投げる
-        ::PostThreadMessage(m_threadID, WM_TS_SET_SPEED, (fMute?4:0)|m_stretchMode, MAKELPARAM(speed, lowSpeed));
-    }
 }
 
 // プラグインが有効にされた時の初期化処理
@@ -1973,6 +1942,15 @@ void CTvtPlay::SetRepeatFlags(bool fAllRepeat, bool fSingleRepeat)
 }
 
 int CTvtPlay::GetStretchID()
+{
+    lock_recursive_mutex lock(m_tsInfoLock);
+    if (m_infoSpeed == 100) return -1;
+    for (int i = 0; i < m_stretchListNum; ++i) {
+        if (m_stretchList[i] == m_infoSpeed) return i;
+    }
+    return -1;
+}
+
 void CTvtPlay::StretchInternal(int speed, bool fShowOsd)
 {
     speed = min(max(speed, 25), 800);
@@ -2491,7 +2469,6 @@ void CTvtPlay::OnCommand(int id, const POINT *pPt, UINT flags)
         break;
     case ID_COMMAND_STRETCH_RESET:
         StretchDirect(100);
-        ShowOSD(100);
         break;
     default:
         if (ID_COMMAND_SEEK_A <= id && id < ID_COMMAND_SEEK_A + m_seekListNum) {
