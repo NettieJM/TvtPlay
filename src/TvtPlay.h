@@ -1,4 +1,4 @@
-﻿#ifndef INCLUDE_TVT_PLAY_H
+#ifndef INCLUDE_TVT_PLAY_H
 #define INCLUDE_TVT_PLAY_H
 
 // プラグインクラス
@@ -87,6 +87,8 @@ private:
     void CopyTimeTitle();
     void CopyToClipboard(LPCTSTR text);
     void AppendToTimestampFile(LPCTSTR text, LPCTSTR title);
+    void NotifyDOpusLabel(LPCTSTR filePath, bool fAdd);
+    static int Base64UrlEncode(const char *src, int srcLen, char *dst, int dstSize);
     void BeginWatchingNextChapter(bool fDoDelay);
     bool CalcStatusRect(RECT *pRect, bool fInit = false);
     void OnResize(bool fInit = false);
@@ -130,6 +132,9 @@ private:
     TCHAR m_szTimestampFilePath[MAX_PATH];
     TCHAR m_szLastRecordedTitle[MAX_PATH];
     int m_timestampMode;
+    bool m_fDOpusLabel;
+    TCHAR m_szDOpusPath[MAX_PATH];
+    TCHAR m_szDOpusLabel[64];
     bool m_fAutoHide, m_fAutoHideActive;
     bool m_fHoveredFromOutside;
     int m_statusRow, m_statusRowFull;

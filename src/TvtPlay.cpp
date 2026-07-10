@@ -232,6 +232,9 @@ CTvtPlay::CTvtPlay()
     m_szTimestampFilePath[0] = 0;
     m_szLastRecordedTitle[0] = 0;
     m_timestampMode = 2;
+    m_fDOpusLabel = false;
+    m_szDOpusPath[0] = 0;
+    m_szDOpusLabel[0] = 0;
     m_szChaptersDirName[0] = 0;
 #ifdef EN_SWC
     m_szCaptionDllPath[0] = 0;
@@ -448,6 +451,12 @@ void CTvtPlay::LoadSettings()
         m_swcClearEarly     = GetBufferedProfileInt(pBuf, TEXT("SlowerWithCaptionClearEarly"), -450);
         m_swcClearEarly     = min(max(m_swcClearEarly, -5000), 5000);
 #endif
+        m_fDOpusLabel       = GetBufferedProfileInt(pBuf, TEXT("DOpusLabel"), 0) != 0;
+        GetBufferedProfileString(pBuf, TEXT("DOpusPath"), TEXT(""), m_szDOpusPath, _countof(m_szDOpusPath));
+        if (m_fDOpusLabel && !m_szDOpusPath[0]) {
+            _tcscpy_s(m_szDOpusPath, TEXT("C:\\Program Files\\GPSoftware\\Directory Opus\\dopusrt.exe"));
+        }
+        GetBufferedProfileString(pBuf, TEXT("DOpusLabelName"), TEXT("Playing"), m_szDOpusLabel, _countof(m_szDOpusLabel));
         m_osdFontSizeRatio  = GetBufferedProfileInt(pBuf, TEXT("OsdFontSizeRatio"), 7);
         // 0=無効, 1=クリップボードのみ, 2=クリップボード+ファイル書き込み
         m_timestampMode     = GetBufferedProfileInt(pBuf, TEXT("TimestampMode"), 2);
@@ -645,6 +654,9 @@ void CTvtPlay::SaveSettings(bool fWriteDefault) const
     if (fWriteDefault) {
         WritePrivateProfileInt(SETTINGS, TEXT("TimestampMode"), m_timestampMode, m_szIniFileName);
         ::WritePrivateProfileString(SETTINGS, TEXT("TimestampFile"), m_szTimestampFilePath, m_szIniFileName);
+        WritePrivateProfileInt(SETTINGS, TEXT("DOpusLabel"), m_fDOpusLabel, m_szIniFileName);
+        ::WritePrivateProfileString(SETTINGS, TEXT("DOpusPath"), m_szDOpusPath, m_szIniFileName);
+        ::WritePrivateProfileString(SETTINGS, TEXT("DOpusLabelName"), m_szDOpusLabel, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("OsdFontSizeRatio"), m_osdFontSizeRatio, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("OsdAlpha"), m_osdAlpha, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("OsdTimeout"), m_osdTimeout, m_szIniFileName);
@@ -973,6 +985,102 @@ void CTvtPlay::AppendToTimestampFile(LPCTSTR text, LPCTSTR title)
 
     // 前回タイトルを更新
     _tcscpy_s(m_szLastRecordedTitle, title);
+}
+
+int CTvtPlay::Base64UrlEncode(const char *src, int srcLen, char *dst, int dstSize)
+{
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    int di = 0;
+
+    for (int i = 0; i < srcLen; i += 3) {
+        unsigned char b0 = (unsigned char)src[i];
+        unsigned char b1 = (i + 1 < srcLen) ? (unsigned char)src[i + 1] : 0;
+        unsigned char b2 = (i + 2 < srcLen) ? (unsigned char)src[i + 2] : 0;
+
+        if (di + 4 >= dstSize) break;
+
+        dst[di++] = table[b0 >> 2];
+        dst[di++] = table[((b0 & 3) << 4) | (b1 >> 4)];
+
+        if (i + 1 < srcLen) {
+            dst[di++] = table[((b1 & 0x0F) << 2) | (b2 >> 6)];
+        }
+        if (i + 2 < srcLen) {
+            dst[di++] = table[b2 & 0x3F];
+        }
+    }
+
+    dst[di] = 0;
+    return di;
+}
+
+void CTvtPlay::NotifyDOpusLabel(LPCTSTR filePath, bool fAdd)
+{
+    if (!m_fDOpusLabel || !m_szDOpusPath[0] || !filePath || !filePath[0]) return;
+
+    // JSON を組み立てる
+    // ラベル名をUTF-8に変換
+    char szLabelUtf8[256];
+    ::WideCharToMultiByte(CP_UTF8, 0, m_szDOpusLabel, -1, szLabelUtf8, sizeof(szLabelUtf8), nullptr, nullptr);
+
+    // ファイルパスをUTF-8に変換
+    char szPathUtf8[MAX_PATH * 3];
+    ::WideCharToMultiByte(CP_UTF8, 0, filePath, -1, szPathUtf8, sizeof(szPathUtf8), nullptr, nullptr);
+
+    // パス内の \ を \\ にエスケープ
+    char szPathEscaped[MAX_PATH * 6];
+    int ei = 0;
+    for (int i = 0; szPathUtf8[i] && ei < (int)sizeof(szPathEscaped) - 2; ++i) {
+        if (szPathUtf8[i] == '\\') {
+            szPathEscaped[ei++] = '\\';
+            szPathEscaped[ei++] = '\\';
+        }
+        else if (szPathUtf8[i] == '"') {
+            szPathEscaped[ei++] = '\\';
+            szPathEscaped[ei++] = '"';
+        }
+        else {
+            szPathEscaped[ei++] = szPathUtf8[i];
+        }
+    }
+    szPathEscaped[ei] = 0;
+
+    // JSON文字列
+    char szJson[MAX_PATH * 8];
+    _snprintf_s(szJson, sizeof(szJson), _TRUNCATE,
+                "{\"action\":\"%s\",\"label\":\"%s\",\"path\":\"%s\"}",
+                fAdd ? "ADD" : "REMOVE",
+                szLabelUtf8,
+                szPathEscaped);
+
+    // Base64URLエンコード
+    char szPayload[MAX_PATH * 12];
+    Base64UrlEncode(szJson, (int)strlen(szJson), szPayload, sizeof(szPayload));
+
+    // コマンドライン組み立て
+    TCHAR szCmdLine[4096];
+    _stprintf_s(szCmdLine, TEXT("\"%s\" /cmd DOpusLabel PAYLOAD="), m_szDOpusPath);
+
+    // payloadをワイド文字に変換して連結
+    size_t pos = _tcslen(szCmdLine);
+    for (int i = 0; szPayload[i] && pos < _countof(szCmdLine) - 1; ++i) {
+        szCmdLine[pos++] = (TCHAR)szPayload[i];
+    }
+    szCmdLine[pos] = 0;
+
+    // プロセス起動
+    STARTUPINFO si = {};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION pi = {};
+    if (::CreateProcess(nullptr, szCmdLine, nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+    {
+        ::CloseHandle(pi.hThread);
+        ::CloseHandle(pi.hProcess);
+    }
 }
 
 // 既存の Stretch(int stretchID) とは別に、直接速度値を指定する関数
@@ -1994,6 +2102,9 @@ bool CTvtPlay::Open(LPCTSTR fileName, int offset, int stretchID)
     // 再生初期化が完了したことを知らせる
     ::PostThreadMessage(m_threadID, WM_TS_INIT_DONE, 0, 0);
 
+    // DOpusにラベル追加を通知
+    NotifyDOpusLabel(fileName, true);
+
     m_statusView.Invalidate();
     return true;
 }
@@ -2001,6 +2112,10 @@ bool CTvtPlay::Open(LPCTSTR fileName, int offset, int stretchID)
 
 void CTvtPlay::Close()
 {
+    // DOpusにラベル除去を通知
+    if (m_hThread && !m_playlist.Get().empty()) {
+        NotifyDOpusLabel(m_playlist.Get()[m_playlist.GetPosition()].path, false);
+    }
     if (m_hThread) {
         ::PostThreadMessage(m_threadID, WM_QUIT, 0, 0);
         ::WaitForSingleObject(m_hThread, INFINITE);
