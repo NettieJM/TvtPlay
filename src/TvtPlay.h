@@ -135,6 +135,7 @@ private:
     bool m_fDOpusLabel;
     TCHAR m_szDOpusPath[MAX_PATH];
     TCHAR m_szDOpusLabel[64];
+    TCHAR m_szCurrentFilePath[MAX_PATH];
     bool m_fAutoHide, m_fAutoHideActive;
     bool m_fHoveredFromOutside;
     int m_statusRow, m_statusRowFull;

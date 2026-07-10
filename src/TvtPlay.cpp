@@ -235,6 +235,7 @@ CTvtPlay::CTvtPlay()
     m_fDOpusLabel = false;
     m_szDOpusPath[0] = 0;
     m_szDOpusLabel[0] = 0;
+    m_szCurrentFilePath[0] = 0;
     m_szChaptersDirName[0] = 0;
 #ifdef EN_SWC
     m_szCaptionDllPath[0] = 0;
@@ -2102,8 +2103,9 @@ bool CTvtPlay::Open(LPCTSTR fileName, int offset, int stretchID)
     // 再生初期化が完了したことを知らせる
     ::PostThreadMessage(m_threadID, WM_TS_INIT_DONE, 0, 0);
 
-    // DOpusにラベル追加を通知
-    NotifyDOpusLabel(fileName, true);
+    // 現在のファイルパスを記録して DOpus にラベル追加を通知
+    _tcsncpy_s(m_szCurrentFilePath, fileName, _TRUNCATE);
+    NotifyDOpusLabel(m_szCurrentFilePath, true);
 
     m_statusView.Invalidate();
     return true;
@@ -2113,8 +2115,9 @@ bool CTvtPlay::Open(LPCTSTR fileName, int offset, int stretchID)
 void CTvtPlay::Close()
 {
     // DOpusにラベル除去を通知
-    if (m_hThread && !m_playlist.Get().empty()) {
-        NotifyDOpusLabel(m_playlist.Get()[m_playlist.GetPosition()].path, false);
+    if (m_szCurrentFilePath[0]) {
+        NotifyDOpusLabel(m_szCurrentFilePath, false);
+        m_szCurrentFilePath[0] = 0;
     }
     if (m_hThread) {
         ::PostThreadMessage(m_threadID, WM_QUIT, 0, 0);
