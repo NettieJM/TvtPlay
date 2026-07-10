@@ -1941,16 +1941,6 @@ void CTvtPlay::SetRepeatFlags(bool fAllRepeat, bool fSingleRepeat)
     SaveSettings();
 }
 
-int CTvtPlay::GetStretchID()
-{
-    lock_recursive_mutex lock(m_tsInfoLock);
-    if (m_infoSpeed == 100) return -1;
-    for (int i = 0; i < m_stretchListNum; ++i) {
-        if (m_stretchList[i] == m_infoSpeed) return i;
-    }
-    return -1;
-}
-
 void CTvtPlay::StretchInternal(int speed, bool fShowOsd)
 {
     speed = min(max(speed, 25), 800);
@@ -2037,6 +2027,8 @@ void CTvtPlay::UpdateOsdPosition(int width, int height)
         width, height,
         SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
+
+int CTvtPlay::GetStretchID()
 {
     lock_recursive_mutex lock(m_tsInfoLock);
     if (m_infoSpeed == 100) return -1;
