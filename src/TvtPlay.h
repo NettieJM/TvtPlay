@@ -1,6 +1,14 @@
 #ifndef INCLUDE_TVT_PLAY_H
 #define INCLUDE_TVT_PLAY_H
 
+// 外部プラグインとの FILE_ID 受け渡し用
+struct TVTP_FILE_ID_INFO {
+    DWORD Size;
+    DWORD VolumeSerialNumber;
+    DWORD FileIndexHigh;
+    DWORD FileIndexLow;
+};
+
 // プラグインクラス
 class CTvtPlay : public TVTest::CTVTestPlugin, public ITvtPlayController
 {
@@ -89,6 +97,8 @@ private:
     void AppendToTimestampFile(LPCTSTR text, LPCTSTR title);
     void NotifyDOpusLabel(LPCTSTR filePath, bool fAdd);
     static int Base64UrlEncode(const char *src, int srcLen, char *dst, int dstSize);
+    bool GetCurrentFileID(TVTP_FILE_ID_INFO *pInfo);
+    DWORD GetRecordingStartUnix();
     void BeginWatchingNextChapter(bool fDoDelay);
     bool CalcStatusRect(RECT *pRect, bool fInit = false);
     void OnResize(bool fInit = false);
@@ -136,6 +146,7 @@ private:
     TCHAR m_szDOpusPath[MAX_PATH];
     TCHAR m_szDOpusLabel[64];
     TCHAR m_szCurrentFilePath[MAX_PATH];
+    DWORD m_recordingStartUnix;
     bool m_fAutoHide, m_fAutoHideActive;
     bool m_fHoveredFromOutside;
     int m_statusRow, m_statusRowFull;

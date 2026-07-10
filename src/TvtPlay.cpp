@@ -43,7 +43,7 @@ static const int INFO_VERSION = 26;
 #define WM_SATISFIED_POS_GT (WM_APP + 5)
 
 // TvtPlayから他プラグインに情報提供するメッセージ
-#define TVTP_CURRENT_MSGVER 2
+#define TVTP_CURRENT_MSGVER 3
 #define WM_TVTP_GET_MSGVER      (WM_APP + 50)
 #define WM_TVTP_IS_OPEN         (WM_APP + 51)
 #define WM_TVTP_GET_POSITION    (WM_APP + 52)
@@ -57,6 +57,8 @@ static const int INFO_VERSION = 26;
 #define WM_TVTP_SEEK            (WM_APP + 60)
 #define WM_TVTP_SEEK_ABSOLUTE   (WM_APP + 61)
 #define WM_TVTP_GET_TOT_UNIX    (WM_APP + 62)
+#define WM_TVTP_GET_FILE_ID             (WM_APP + 63)
+#define WM_TVTP_GET_RECORDING_START_UNIX (WM_APP + 64)
 
 #define WM_TS_SET_UDP       (WM_APP + 1)
 #define WM_TS_SET_PIPE      (WM_APP + 2)
@@ -236,6 +238,7 @@ CTvtPlay::CTvtPlay()
     m_szDOpusPath[0] = 0;
     m_szDOpusLabel[0] = 0;
     m_szCurrentFilePath[0] = 0;
+    m_recordingStartUnix = 0;
     m_szChaptersDirName[0] = 0;
 #ifdef EN_SWC
     m_szCaptionDllPath[0] = 0;
@@ -1082,6 +1085,57 @@ void CTvtPlay::NotifyDOpusLabel(LPCTSTR filePath, bool fAdd)
         ::CloseHandle(pi.hThread);
         ::CloseHandle(pi.hProcess);
     }
+}
+
+bool CTvtPlay::GetCurrentFileID(TVTP_FILE_ID_INFO *pInfo)
+{
+    if (!pInfo || pInfo->Size < sizeof(TVTP_FILE_ID_INFO)) return false;
+    if (!m_szCurrentFilePath[0]) return false;
+
+    HANDLE hFile = ::CreateFile(
+        m_szCurrentFilePath,
+        0,  // アクセス権不要（属性のみ取得）
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    BY_HANDLE_FILE_INFORMATION fi;
+    BOOL rv = ::GetFileInformationByHandle(hFile, &fi);
+    ::CloseHandle(hFile);
+
+    if (!rv) return false;
+
+    pInfo->VolumeSerialNumber = fi.dwVolumeSerialNumber;
+    pInfo->FileIndexHigh = fi.nFileIndexHigh;
+    pInfo->FileIndexLow = fi.nFileIndexLow;
+    return true;
+}
+
+DWORD CTvtPlay::GetRecordingStartUnix()
+{
+    if (!IsOpen()) return 0;
+
+    // Open時に記録した値があればそれを使う（安定）
+    if (m_recordingStartUnix > 0) {
+        return m_recordingStartUnix;
+    }
+
+    // フォールバック: 現在の放送時刻から動的に算出
+    DWORD totUnix;
+    int pos;
+    {
+        lock_recursive_mutex lock(m_tsInfoLock);
+        totUnix = m_infoTotUnix;
+        pos = m_infoPos;
+    }
+
+    if (totUnix == 0) return 0;
+
+    return totUnix - (DWORD)(pos / 1000);
 }
 
 // 既存の Stretch(int stretchID) とは別に、直接速度値を指定する関数
@@ -2107,6 +2161,16 @@ bool CTvtPlay::Open(LPCTSTR fileName, int offset, int stretchID)
     _tcsncpy_s(m_szCurrentFilePath, fileName, _TRUNCATE);
     NotifyDOpusLabel(m_szCurrentFilePath, true);
 
+    // 録画開始時刻を算出して記録
+    m_recordingStartUnix = 0;
+    {
+        DWORD totUnix = m_tsSender.GetBroadcastUnixTime();
+        int pos = m_tsSender.GetPosition();
+        if (totUnix > 0) {
+            m_recordingStartUnix = totUnix - (DWORD)(pos / 1000);
+        }
+    }
+
     m_statusView.Invalidate();
     return true;
 }
@@ -2116,6 +2180,7 @@ void CTvtPlay::Close()
 {
     // DOpusにラベル除去を通知
     if (m_szCurrentFilePath[0]) {
+        m_recordingStartUnix = 0;
         NotifyDOpusLabel(m_szCurrentFilePath, false);
         m_szCurrentFilePath[0] = 0;
     }
@@ -3255,6 +3320,13 @@ LRESULT CALLBACK CTvtPlay::FrameWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, 
         return TRUE;
     case WM_TVTP_GET_TOT_UNIX:
         return pThis->GetTotUnixTime();
+    case WM_TVTP_GET_FILE_ID:
+        {
+            TVTP_FILE_ID_INFO *pInfo = reinterpret_cast<TVTP_FILE_ID_INFO*>(lParam);
+            return pThis->GetCurrentFileID(pInfo) ? TRUE : FALSE;
+        }
+    case WM_TVTP_GET_RECORDING_START_UNIX:
+        return static_cast<LRESULT>(pThis->GetRecordingStartUnix());
     case WM_APPCOMMAND:
         // メディアキー対策(オーナーウィンドウには自分で送る必要がある)
         ::SendMessage(::GetParent(hwnd), uMsg, wParam, lParam);
