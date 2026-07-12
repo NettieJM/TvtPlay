@@ -1117,25 +1117,21 @@ bool CTvtPlay::GetCurrentFileID(TVTP_FILE_ID_INFO *pInfo)
 
 DWORD CTvtPlay::GetRecordingStartUnix()
 {
-    if (!IsOpen()) return 0;
+    lock_recursive_mutex lock(m_tsInfoLock);
 
-    // Open時に記録した値があればそれを使う（安定）
     if (m_recordingStartUnix > 0) {
         return m_recordingStartUnix;
     }
 
-    // フォールバック: 現在の放送時刻から動的に算出
-    DWORD totUnix;
-    int pos;
-    {
-        lock_recursive_mutex lock(m_tsInfoLock);
-        totUnix = m_infoTotUnix;
-        pos = m_infoPos;
+    // 念のためのフォールバック
+    if (m_infoTotUnix > 0 && m_infoPos >= 0) {
+        DWORD posSec = static_cast<DWORD>((m_infoPos + 500) / 1000);
+        if (m_infoTotUnix >= posSec) {
+            return m_infoTotUnix - posSec;
+        }
     }
 
-    if (totUnix == 0) return 0;
-
-    return totUnix - (DWORD)(pos / 1000);
+    return 0;
 }
 
 // 既存の Stretch(int stretchID) とは別に、直接速度値を指定する関数
@@ -2161,15 +2157,8 @@ bool CTvtPlay::Open(LPCTSTR fileName, int offset, int stretchID)
     _tcsncpy_s(m_szCurrentFilePath, fileName, _TRUNCATE);
     NotifyDOpusLabel(m_szCurrentFilePath, true);
 
-    // 録画開始時刻を算出して記録
+    // 録画開始時刻は UpdateInfos() 側で安定後に更新する
     m_recordingStartUnix = 0;
-    {
-        DWORD totUnix = m_tsSender.GetBroadcastUnixTime();
-        int pos = m_tsSender.GetPosition();
-        if (totUnix > 0) {
-            m_recordingStartUnix = totUnix - (DWORD)(pos / 1000);
-        }
-    }
 
     m_statusView.Invalidate();
     return true;
@@ -3346,6 +3335,14 @@ void CTvtPlay::UpdateInfos()
         m_infoTotUnix = m_tsSender.GetBroadcastUnixTime();
         m_infoExtMode = m_tsSender.IsFixed(&fSpecialExt) ? 0 : fSpecialExt ? 2 : 1;
         m_fInfoPaused = m_tsSender.IsPaused();
+
+        // 現在のTOTと再生位置から録画開始UNIX時刻を更新
+        if (m_infoTotUnix > 0 && m_infoPos >= 0) {
+            DWORD posSec = static_cast<DWORD>((m_infoPos + 500) / 1000); // 四捨五入気味
+            if (m_infoTotUnix >= posSec) {
+                m_recordingStartUnix = m_infoTotUnix - posSec;
+            }
+        }
         // m_infoSpeedはm_tsSenderのもつ値と必ずしも一致しない
     }
     else {
@@ -3354,6 +3351,7 @@ void CTvtPlay::UpdateInfos()
         m_infoTotUnix = 0;
         m_infoSpeed = 100;
         m_fInfoPaused = false;
+        m_recordingStartUnix = 0;
     }
 }
 
