@@ -23,6 +23,10 @@ CSeekTooltip::CSeekTooltip()
 CSeekTooltip::~CSeekTooltip()
 {
     Destroy();
+    if (m_hFont) {
+        ::DeleteObject(m_hFont);
+        m_hFont = nullptr;
+    }
 }
 
 bool CSeekTooltip::Create(HINSTANCE hInstance)
@@ -57,47 +61,87 @@ void CSeekTooltip::Destroy()
     }
 }
 
-void CSeekTooltip::Show(HWND hwndParent, int screenX, int screenY, LPCTSTR pszText, HFONT hFont)
+void CSeekTooltip::UpdateFont(const LOGFONT* pLogFont)
+{
+    // 既存フォントを破棄
+    if (m_hFont) {
+        ::DeleteObject(m_hFont);
+        m_hFont = nullptr;
+    }
+
+    LOGFONT lf;
+    if (pLogFont) {
+        lf = *pLogFont;
+    }
+    else {
+        // フォールバック: システムフォント
+        NONCLIENTMETRICS ncm = { sizeof(ncm) };
+        ::SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+        lf = ncm.lfStatusFont;
+    }
+
+    // 視認性のためボールド化 & 少し大きく
+    lf.lfWeight = FW_BOLD;
+    if (lf.lfHeight < 0) {
+        lf.lfHeight = (int)(lf.lfHeight * 1.15); // 負値なので絶対値が大きくなる=フォント大きく
+    }
+    else if (lf.lfHeight > 0) {
+        lf.lfHeight = (int)(lf.lfHeight * 1.15);
+    }
+    else {
+        lf.lfHeight = -14; // 0の場合のフォールバック
+    }
+    lf.lfQuality = CLEARTYPE_QUALITY;
+
+    m_hFont = ::CreateFontIndirect(&lf);
+}
+
+void CSeekTooltip::Show(HWND hwndParent, int screenX, int screenY, LPCTSTR pszText, const LOGFONT* pLogFont)
 {
     if (!m_hwnd) {
         HINSTANCE hInst = (HINSTANCE)::GetWindowLongPtr(hwndParent, GWLP_HINSTANCE);
         if (!Create(hInst)) return;
     }
 
-    m_hFont = hFont;
+    // フォントがまだなければ作成
+    if (!m_hFont) {
+        UpdateFont(pLogFont);
+    }
+
     _tcsncpy_s(m_szText, pszText, _TRUNCATE);
 
     // テキストサイズを計算
     HDC hdc = ::GetDC(m_hwnd);
-    HFONT hFontOld = hFont ? SelectFont(hdc, hFont) : nullptr;
+    HFONT hFontOld = m_hFont ? SelectFont(hdc, m_hFont) : nullptr;
     RECT rcText = {};
     ::DrawText(hdc, m_szText, -1, &rcText,
-               DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+        DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
     if (hFontOld) SelectFont(hdc, hFontOld);
     ::ReleaseDC(m_hwnd, hdc);
 
-    int pad = 4;
+    int padX = 6;
+    int padY = 3;
     int border = 1;
-    int w = rcText.right - rcText.left + pad * 2 + border * 2;
-    int h = rcText.bottom - rcText.top + pad * 2 + border * 2;
+    int w = rcText.right - rcText.left + padX * 2 + border * 2;
+    int h = rcText.bottom - rcText.top + padY * 2 + border * 2;
 
     // カーソル真上、中央揃え
     int x = screenX - w / 2;
-    int y = screenY - h - 4;
+    int y = screenY - h - 6;
 
     // 画面外にはみ出さない
-    HMONITOR hMon = ::MonitorFromPoint({screenX, screenY}, MONITOR_DEFAULTTONEAREST);
+    HMONITOR hMon = ::MonitorFromPoint({ screenX, screenY }, MONITOR_DEFAULTTONEAREST);
     if (hMon) {
         MONITORINFO mi = { sizeof(mi) };
         if (::GetMonitorInfo(hMon, &mi)) {
             if (x < mi.rcWork.left) x = mi.rcWork.left;
             if (x + w > mi.rcWork.right) x = mi.rcWork.right - w;
-            if (y < mi.rcWork.top) y = screenY + 20; // 上に出せないなら下に
+            if (y < mi.rcWork.top) y = screenY + 20;
         }
     }
 
     ::SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, w, h,
-                   SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SWP_NOACTIVATE | SWP_SHOWWINDOW);
     ::InvalidateRect(m_hwnd, nullptr, TRUE);
 }
 
@@ -115,7 +159,7 @@ bool CSeekTooltip::IsVisible() const
 
 LRESULT CALLBACK CSeekTooltip::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    CSeekTooltip *pThis;
+    CSeekTooltip* pThis;
 
     if (uMsg == WM_CREATE) {
         LPCREATESTRUCT pcs = reinterpret_cast<LPCREATESTRUCT>(lParam);
@@ -129,50 +173,48 @@ LRESULT CALLBACK CSeekTooltip::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
     switch (uMsg) {
     case WM_PAINT:
-        {
-            PAINTSTRUCT ps;
-            HDC hdc = ::BeginPaint(hwnd, &ps);
-            RECT rcClient;
-            ::GetClientRect(hwnd, &rcClient);
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = ::BeginPaint(hwnd, &ps);
+        RECT rcClient;
+        ::GetClientRect(hwnd, &rcClient);
 
-            // 親のステータスバーから色を取得するため、
-            // システムカラーベースで描画
-            COLORREF crBk = ::GetSysColor(COLOR_INFOBK);
-            COLORREF crText = ::GetSysColor(COLOR_INFOTEXT);
-            COLORREF crBorder = ::GetSysColor(COLOR_WINDOWFRAME);
+        // 背景: 濃いグレー系
+        COLORREF crBk = RGB(40, 40, 40);
+        COLORREF crText = RGB(240, 240, 240);
+        COLORREF crBorder = RGB(100, 100, 100);
 
-            // 背景
-            HBRUSH hbrBk = ::CreateSolidBrush(crBk);
-            ::FillRect(hdc, &rcClient, hbrBk);
-            ::DeleteObject(hbrBk);
+        // 背景塗りつぶし
+        HBRUSH hbrBk = ::CreateSolidBrush(crBk);
+        ::FillRect(hdc, &rcClient, hbrBk);
+        ::DeleteObject(hbrBk);
 
-            // 枠線
-            HPEN hpen = ::CreatePen(PS_SOLID, 1, crBorder);
-            HPEN hpenOld = SelectPen(hdc, hpen);
-            HBRUSH hbrOld = SelectBrush(hdc, ::GetStockObject(NULL_BRUSH));
-            ::Rectangle(hdc, rcClient.left, rcClient.top, rcClient.right, rcClient.bottom);
-            SelectBrush(hdc, hbrOld);
-            SelectPen(hdc, hpenOld);
-            ::DeleteObject(hpen);
+        // 枠線
+        HPEN hpen = ::CreatePen(PS_SOLID, 1, crBorder);
+        HPEN hpenOld = SelectPen(hdc, hpen);
+        HBRUSH hbrOld = SelectBrush(hdc, ::GetStockObject(NULL_BRUSH));
+        ::Rectangle(hdc, rcClient.left, rcClient.top, rcClient.right, rcClient.bottom);
+        SelectBrush(hdc, hbrOld);
+        SelectPen(hdc, hpenOld);
+        ::DeleteObject(hpen);
 
-            // テキスト
-            HFONT hFontOld = pThis->m_hFont ? SelectFont(hdc, pThis->m_hFont) : nullptr;
-            ::SetBkMode(hdc, TRANSPARENT);
-            ::SetTextColor(hdc, crText);
-            RECT rcText = rcClient;
-            ::InflateRect(&rcText, -5, -5);
-            ::DrawText(hdc, pThis->m_szText, -1, &rcText,
-                       DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-            if (hFontOld) SelectFont(hdc, hFontOld);
+        // テキスト描画
+        HFONT hFontOld = pThis->m_hFont ? SelectFont(hdc, pThis->m_hFont) : nullptr;
+        ::SetBkMode(hdc, TRANSPARENT);
+        ::SetTextColor(hdc, crText);
+        RECT rcText = rcClient;
+        ::InflateRect(&rcText, -7, -4);
+        ::DrawText(hdc, pThis->m_szText, -1, &rcText,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        if (hFontOld) SelectFont(hdc, hFontOld);
 
-            ::EndPaint(hwnd, &ps);
-        }
-        return 0;
+        ::EndPaint(hwnd, &ps);
+    }
+    return 0;
 
     case WM_ERASEBKGND:
         return 1;
 
-    // マウスイベントを透過させる
     case WM_NCHITTEST:
         return HTTRANSPARENT;
     }
@@ -263,16 +305,14 @@ void CSeekStatusItem::UpdateTooltip(int x, int y)
     POINT ptScreen = { rc.left + x, rc.top };
     ::ClientToScreen(m_pStatus->GetHandle(), &ptScreen);
 
-    // フォント取得
-    HFONT hFont = nullptr;
-    LOGFONT logFont;
+    // LOGFONTを取得して渡す（フォント管理はCSeekTooltip側）
+    LOGFONT logFont = {};
+    const LOGFONT* pLogFont = nullptr;
     if (m_pStatus->GetFont(&logFont)) {
-        hFont = ::CreateFontIndirect(&logFont);
+        pLogFont = &logFont;
     }
 
-    m_tooltip.Show(m_pStatus->GetHandle(), ptScreen.x, ptScreen.y, szText, hFont);
-
-    if (hFont) ::DeleteObject(hFont);
+    m_tooltip.Show(m_pStatus->GetHandle(), ptScreen.x, ptScreen.y, szText, pLogFont);
 }
 
 void CSeekStatusItem::Draw(HDC hdc, const RECT *pRect)

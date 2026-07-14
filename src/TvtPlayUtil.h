@@ -82,7 +82,7 @@ public:
     ~CSeekTooltip();
     bool Create(HINSTANCE hInstance);
     void Destroy();
-    void Show(HWND hwndParent, int screenX, int screenY, LPCTSTR pszText, HFONT hFont);
+    void Show(HWND hwndParent, int screenX, int screenY, LPCTSTR pszText, const LOGFONT* pLogFont);
     void Hide();
     bool IsVisible() const;
 private:
@@ -91,6 +91,7 @@ private:
     HWND m_hwnd;
     TCHAR m_szText[64];
     HFONT m_hFont;
+    void UpdateFont(const LOGFONT* pLogFont);
 };
 
 class CSeekStatusItem : public CStatusItem
