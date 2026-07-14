@@ -6,16 +6,198 @@
 #include "ChapterMap.h"
 #include "TvtPlayUtil.h"
 
+// ============================================================
+// CSeekTooltip
+// ============================================================
+
+static const LPCTSTR SEEK_TOOLTIP_CLASS = TEXT("TvtPlay Seek Tooltip");
+bool CSeekTooltip::m_fClassRegistered = false;
+
+CSeekTooltip::CSeekTooltip()
+    : m_hwnd(nullptr)
+    , m_hFont(nullptr)
+{
+    m_szText[0] = 0;
+}
+
+CSeekTooltip::~CSeekTooltip()
+{
+    Destroy();
+}
+
+bool CSeekTooltip::Create(HINSTANCE hInstance)
+{
+    if (m_hwnd) return true;
+
+    if (!m_fClassRegistered) {
+        WNDCLASS wc = {};
+        wc.lpfnWndProc = WndProc;
+        wc.hInstance = hInstance;
+        wc.lpszClassName = SEEK_TOOLTIP_CLASS;
+        wc.hCursor = ::LoadCursor(nullptr, IDC_ARROW);
+        if (!::RegisterClass(&wc)) return false;
+        m_fClassRegistered = true;
+    }
+
+    m_hwnd = ::CreateWindowEx(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        SEEK_TOOLTIP_CLASS, nullptr,
+        WS_POPUP,
+        0, 0, 1, 1,
+        nullptr, nullptr, hInstance, this);
+
+    return m_hwnd != nullptr;
+}
+
+void CSeekTooltip::Destroy()
+{
+    if (m_hwnd) {
+        ::DestroyWindow(m_hwnd);
+        m_hwnd = nullptr;
+    }
+}
+
+void CSeekTooltip::Show(HWND hwndParent, int screenX, int screenY, LPCTSTR pszText, HFONT hFont)
+{
+    if (!m_hwnd) {
+        HINSTANCE hInst = (HINSTANCE)::GetWindowLongPtr(hwndParent, GWLP_HINSTANCE);
+        if (!Create(hInst)) return;
+    }
+
+    m_hFont = hFont;
+    _tcsncpy_s(m_szText, pszText, _TRUNCATE);
+
+    // テキストサイズを計算
+    HDC hdc = ::GetDC(m_hwnd);
+    HFONT hFontOld = hFont ? SelectFont(hdc, hFont) : nullptr;
+    RECT rcText = {};
+    ::DrawText(hdc, m_szText, -1, &rcText,
+               DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+    if (hFontOld) SelectFont(hdc, hFontOld);
+    ::ReleaseDC(m_hwnd, hdc);
+
+    int pad = 4;
+    int border = 1;
+    int w = rcText.right - rcText.left + pad * 2 + border * 2;
+    int h = rcText.bottom - rcText.top + pad * 2 + border * 2;
+
+    // カーソル真上、中央揃え
+    int x = screenX - w / 2;
+    int y = screenY - h - 4;
+
+    // 画面外にはみ出さない
+    HMONITOR hMon = ::MonitorFromPoint({screenX, screenY}, MONITOR_DEFAULTTONEAREST);
+    if (hMon) {
+        MONITORINFO mi = { sizeof(mi) };
+        if (::GetMonitorInfo(hMon, &mi)) {
+            if (x < mi.rcWork.left) x = mi.rcWork.left;
+            if (x + w > mi.rcWork.right) x = mi.rcWork.right - w;
+            if (y < mi.rcWork.top) y = screenY + 20; // 上に出せないなら下に
+        }
+    }
+
+    ::SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, w, h,
+                   SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    ::InvalidateRect(m_hwnd, nullptr, TRUE);
+}
+
+void CSeekTooltip::Hide()
+{
+    if (m_hwnd && ::IsWindowVisible(m_hwnd)) {
+        ::ShowWindow(m_hwnd, SW_HIDE);
+    }
+}
+
+bool CSeekTooltip::IsVisible() const
+{
+    return m_hwnd && ::IsWindowVisible(m_hwnd);
+}
+
+LRESULT CALLBACK CSeekTooltip::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    CSeekTooltip *pThis;
+
+    if (uMsg == WM_CREATE) {
+        LPCREATESTRUCT pcs = reinterpret_cast<LPCREATESTRUCT>(lParam);
+        pThis = reinterpret_cast<CSeekTooltip*>(pcs->lpCreateParams);
+        ::SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+        return 0;
+    }
+
+    pThis = reinterpret_cast<CSeekTooltip*>(::GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    if (!pThis) return ::DefWindowProc(hwnd, uMsg, wParam, lParam);
+
+    switch (uMsg) {
+    case WM_PAINT:
+        {
+            PAINTSTRUCT ps;
+            HDC hdc = ::BeginPaint(hwnd, &ps);
+            RECT rcClient;
+            ::GetClientRect(hwnd, &rcClient);
+
+            // 親のステータスバーから色を取得するため、
+            // システムカラーベースで描画
+            COLORREF crBk = ::GetSysColor(COLOR_INFOBK);
+            COLORREF crText = ::GetSysColor(COLOR_INFOTEXT);
+            COLORREF crBorder = ::GetSysColor(COLOR_WINDOWFRAME);
+
+            // 背景
+            HBRUSH hbrBk = ::CreateSolidBrush(crBk);
+            ::FillRect(hdc, &rcClient, hbrBk);
+            ::DeleteObject(hbrBk);
+
+            // 枠線
+            HPEN hpen = ::CreatePen(PS_SOLID, 1, crBorder);
+            HPEN hpenOld = SelectPen(hdc, hpen);
+            HBRUSH hbrOld = SelectBrush(hdc, ::GetStockObject(NULL_BRUSH));
+            ::Rectangle(hdc, rcClient.left, rcClient.top, rcClient.right, rcClient.bottom);
+            SelectBrush(hdc, hbrOld);
+            SelectPen(hdc, hpenOld);
+            ::DeleteObject(hpen);
+
+            // テキスト
+            HFONT hFontOld = pThis->m_hFont ? SelectFont(hdc, pThis->m_hFont) : nullptr;
+            ::SetBkMode(hdc, TRANSPARENT);
+            ::SetTextColor(hdc, crText);
+            RECT rcText = rcClient;
+            ::InflateRect(&rcText, -5, -5);
+            ::DrawText(hdc, pThis->m_szText, -1, &rcText,
+                       DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            if (hFontOld) SelectFont(hdc, hFontOld);
+
+            ::EndPaint(hwnd, &ps);
+        }
+        return 0;
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    // マウスイベントを透過させる
+    case WM_NCHITTEST:
+        return HTTRANSPARENT;
+    }
+
+    return ::DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+// ============================================================
+// CStatusViewEventHandler
+// ============================================================
+
 void CStatusViewEventHandler::OnMouseLeave()
 {
     CStatusItem *pItem = m_pStatusView->GetItemByID(STATUS_ITEM_SEEK);
     if (pItem) {
-        // ちょっと汚い…
         CSeekStatusItem *pSeekItem = dynamic_cast<CSeekStatusItem*>(pItem);
         pSeekItem->SetMousePos(-1, -1);
+        pSeekItem->HideTooltip();
         pSeekItem->Update();
     }
 }
+
+// ============================================================
+// CSeekStatusItem
+// ============================================================
 
 CSeekStatusItem::CSeekStatusItem(ITvtPlayController *pPlugin, bool fDrawOfs, bool fDrawTot, int width, int seekMode)
     : CStatusItem(STATUS_ITEM_SEEK, max(width, 64))
@@ -26,6 +208,71 @@ CSeekStatusItem::CSeekStatusItem(ITvtPlayController *pPlugin, bool fDrawOfs, boo
 {
     m_MinWidth = m_DefaultWidth;
     SetMousePos(-1, -1);
+}
+
+CSeekStatusItem::~CSeekStatusItem()
+{
+    m_tooltip.Destroy();
+}
+
+void CSeekStatusItem::HideTooltip()
+{
+    m_tooltip.Hide();
+}
+
+void CSeekStatusItem::UpdateTooltip(int x, int y)
+{
+    if (!m_pStatus || !m_pPlugin->IsOpen()) {
+        m_tooltip.Hide();
+        return;
+    }
+
+    int dur = m_pPlugin->GetDuration();
+    if (dur <= 0) {
+        m_tooltip.Hide();
+        return;
+    }
+
+    RECT rc, rcc;
+    GetRect(&rc);
+    GetClientRect(&rcc);
+
+    // バーの矩形
+    int barLeft = (rcc.left - rc.left) + 2;
+    int barRight = (rcc.right - rc.left) - 2;
+
+    if (x < barLeft || x >= barRight) {
+        m_tooltip.Hide();
+        return;
+    }
+
+    // マウス位置から時間を算出
+    int posMsec = ConvUnit(x - barLeft, dur, barRight - barLeft);
+    int posSec = posMsec / 1000;
+
+    // テキスト生成
+    TCHAR szText[64];
+    if (posSec < 3600 && dur < 3600000) {
+        _stprintf_s(szText, TEXT("%02d:%02d"), posSec / 60 % 60, posSec % 60);
+    }
+    else {
+        _stprintf_s(szText, TEXT("%d:%02d:%02d"), posSec / 60 / 60, posSec / 60 % 60, posSec % 60);
+    }
+
+    // ローカル座標→スクリーン座標
+    POINT ptScreen = { rc.left + x, rc.top };
+    ::ClientToScreen(m_pStatus->GetHandle(), &ptScreen);
+
+    // フォント取得
+    HFONT hFont = nullptr;
+    LOGFONT logFont;
+    if (m_pStatus->GetFont(&logFont)) {
+        hFont = ::CreateFontIndirect(&logFont);
+    }
+
+    m_tooltip.Show(m_pStatus->GetHandle(), ptScreen.x, ptScreen.y, szText, hFont);
+
+    if (hFont) ::DeleteObject(hFont);
 }
 
 void CSeekStatusItem::Draw(HDC hdc, const RECT *pRect)
@@ -211,7 +458,6 @@ void CSeekStatusItem::ProcessSeek(int x)
     }
     else {
         int pos = ConvUnit(x-(rcc.left-rc.left)-2, dur, rcc.right-rcc.left-4);
-        // ちょっと手前にシークされた方が使いやすいため1000ミリ秒引く
         m_pPlugin->SeekAbsolute(pos - 1000);
     }
 }
@@ -305,6 +551,8 @@ void CSeekStatusItem::OnMouseMove(int x, int y)
         else {
             Update();
         }
+        // ツールチップを更新
+        UpdateTooltip(x, y);
     }
 }
 
@@ -347,7 +595,6 @@ void CPositionStatusItem::Draw(HDC hdc, const RECT *pRect)
                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
 }
 
-// 表示に適したアイテム幅を算出する
 int CPositionStatusItem::CalcSuitableWidth()
 {
     int rv = -1;
@@ -357,7 +604,6 @@ int CPositionStatusItem::CalcSuitableWidth()
         if (hfont) {
             HDC hdc = ::GetDC(m_pStatus->GetHandle());
             if (hdc) {
-                // 表示に適したアイテム幅を算出
                 TCHAR szText[128];
                 _tcscpy_s(szText, TEXT("00:00:00/00:00:00+"));
                 if (m_pPlugin->IsPosDrawTotEnabled()) _tcscat_s(szText, TEXT(" (00:00:00)"));
@@ -421,7 +667,6 @@ void CButtonStatusItem::Draw(HDC hdc, const RECT *pRect)
     else if (ID_COMMAND_STRETCH_A <= cmdID && cmdID < ID_COMMAND_STRETCH_A + COMMAND_S_MAX) {
         int stid = m_pPlugin->GetStretchID();
         iconPos = stid == cmdID - ID_COMMAND_STRETCH_A ? 1 :
-                  /* サブコマンドもStretchなら3つ目も使う */
                   (ID_COMMAND_STRETCH_A <= subCmdID && subCmdID < ID_COMMAND_STRETCH_A + COMMAND_S_MAX) &&
                   stid == subCmdID - ID_COMMAND_STRETCH_A ? 2 : 0;
     }

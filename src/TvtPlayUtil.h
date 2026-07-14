@@ -74,10 +74,30 @@ public:
     void OnMouseLeave();
 };
 
+// シークバー用ツールチップウィンドウ
+class CSeekTooltip
+{
+public:
+    CSeekTooltip();
+    ~CSeekTooltip();
+    bool Create(HINSTANCE hInstance);
+    void Destroy();
+    void Show(HWND hwndParent, int screenX, int screenY, LPCTSTR pszText, HFONT hFont);
+    void Hide();
+    bool IsVisible() const;
+private:
+    static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+    static bool m_fClassRegistered;
+    HWND m_hwnd;
+    TCHAR m_szText[64];
+    HFONT m_hFont;
+};
+
 class CSeekStatusItem : public CStatusItem
 {
 public:
     CSeekStatusItem(ITvtPlayController *pPlugin, bool fDrawOfs, bool fDrawTot, int width, int seekMode);
+    ~CSeekStatusItem();
     LPCTSTR GetName() const { return TEXT("シークバー"); }
     void Draw(HDC hdc, const RECT *pRect);
     void OnLButtonDown(int x, int y);
@@ -85,13 +105,16 @@ public:
     void OnRButtonDown(int x, int y);
     void OnMouseMove(int x, int y);
     void SetMousePos(int x, int y) { m_mousePos.x = x; m_mousePos.y = y; }
+    void HideTooltip();
 private:
     void ProcessSeek(int x);
+    void UpdateTooltip(int x, int y);
     static int ConvUnit(int x, int a, int b) { return x<0||a<0||b<=0 ? 0 : x>=b ? a : (int)((long long)x*a/b); }
     ITvtPlayController *m_pPlugin;
     bool m_fDrawOfs, m_fDrawTot;
     POINT m_mousePos;
     int m_seekMode;
+    CSeekTooltip m_tooltip;
 };
 
 class CPositionStatusItem : public CStatusItem
