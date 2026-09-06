@@ -172,6 +172,9 @@ CTvtPlay::CTvtPlay()
     , m_timeoutOnMove(0)
     , m_seekItemOrder(0)
     , m_posItemOrder(0)
+    , m_speedItemOrder(99)
+    , m_speedItemWidth(-1)
+    , m_fShowStretchButtons(true)
     , m_dispCount(0)
     , m_lastDropCount(0)
     , m_resetDropInterval(0)
@@ -232,8 +235,13 @@ CTvtPlay::CTvtPlay()
     m_szPopupPattern[0] = 0;
     m_szOsdText[0] = 0;
     m_szTimestampFilePath[0] = 0;
-    m_szLastRecordedTitle[0] = 0;
+    m_szLastRecordedGroup[0] = 0;
     m_timestampMode = 2;
+    m_dirAliasCount = 0;
+    for (int i = 0; i < DIR_ALIAS_MAX; ++i) {
+        m_dirAliases[i].path[0] = 0;
+        m_dirAliases[i].name[0] = 0;
+    }
     m_fDOpusLabel = false;
     m_szDOpusPath[0] = 0;
     m_szDOpusLabel[0] = 0;
@@ -477,16 +485,29 @@ void CTvtPlay::LoadSettings()
         m_osdAlpha          = min(max(m_osdAlpha, 0), 255);
         m_osdTimeout        = GetBufferedProfileInt(pBuf, TEXT("OsdTimeout"), 1200);
         m_osdTimeout        = min(max(m_osdTimeout, 200), 10000);
-        m_seekItemOrder     = GetBufferedProfileInt(pBuf, TEXT("SeekItemOrder"), 99);
-        m_posItemOrder      = GetBufferedProfileInt(pBuf, TEXT("StatusItemOrder"), 99);
-        GetBufferedProfileString(pBuf, TEXT("IconImage"), TEXT(""), m_szIconFileName, _countof(m_szIconFileName));
+        m_seekItemOrder = GetBufferedProfileInt(pBuf, TEXT("SeekItemOrder"), 99);
+        m_posItemOrder = GetBufferedProfileInt(pBuf, TEXT("StatusItemOrder"), 99);
+        m_speedItemOrder = GetBufferedProfileInt(pBuf, TEXT("SpeedItemOrder"), 99);
+        m_speedItemWidth = GetBufferedProfileInt(pBuf, TEXT("SpeedItemWidth"), -1);
+        m_fShowStretchButtons =
+            GetBufferedProfileInt(pBuf, TEXT("ShowStretchButtons"), 1) != 0;
+
+        GetBufferedProfileString(
+            pBuf,
+            TEXT("IconImage"),
+            TEXT(""),
+            m_szIconFileName,
+            _countof(m_szIconFileName));
 
         // シークコマンドのシーク量設定を取得
         m_seekListNum = 0;
         while (m_seekListNum < COMMAND_S_MAX) {
             TCHAR key[16];
             _stprintf_s(key, TEXT("Seek%c"), TEXT('A') + m_seekListNum);
-            int val = GetBufferedProfileInt(pBuf, key, DEFAULT_SEEK_LIST[m_seekListNum]);
+            TCHAR szVal[32] = {};
+            GetBufferedProfileString(pBuf, key, TEXT(""), szVal, _countof(szVal));
+            if (!szVal[0]) break;
+            int val = _ttoi(szVal);
             if (!val) break;
             m_seekList[m_seekListNum++] = val;
         }
@@ -495,7 +516,10 @@ void CTvtPlay::LoadSettings()
         while (m_stretchListNum < COMMAND_S_MAX) {
             TCHAR key[16];
             _stprintf_s(key, TEXT("Stretch%c"), TEXT('A') + m_stretchListNum);
-            int val = GetBufferedProfileInt(pBuf, key, DEFAULT_STRETCH_LIST[m_stretchListNum]);
+            TCHAR szVal[32] = {};
+            GetBufferedProfileString(pBuf, key, TEXT(""), szVal, _countof(szVal));
+            if (!szVal[0]) break;
+            int val = _ttoi(szVal);
             if (!val) break;
             m_stretchList[m_stretchListNum++] = min(max(val, 25), 800);
         }
@@ -509,16 +533,18 @@ void CTvtPlay::LoadSettings()
         }
     }
 
-    // タイムスタンプファイルから前回のタイトルを復元
+    // エイリアス設定の読み込み
+    LoadDirAliases();
+
+    // タイムスタンプファイルから前回のグループキーを復元
     if (m_szTimestampFilePath[0]) {
-        FILE *fp = nullptr;
+        FILE* fp = nullptr;
         if (!_tfopen_s(&fp, m_szTimestampFilePath, TEXT("r, ccs=UTF-8")) && fp) {
             TCHAR line[512];
             TCHAR lastLine[512] = {};
             while (_fgetts(line, _countof(line), fp)) {
-                // 末尾の改行を除去
                 size_t len = _tcslen(line);
-                while (len > 0 && (line[len-1] == TEXT('\n') || line[len-1] == TEXT('\r'))) {
+                while (len > 0 && (line[len - 1] == TEXT('\n') || line[len - 1] == TEXT('\r'))) {
                     line[--len] = 0;
                 }
                 if (len > 0) {
@@ -526,10 +552,21 @@ void CTvtPlay::LoadSettings()
                 }
             }
             fclose(fp);
-            // "[00:01:23] タイトル" から "] " の後ろを抽出
-            LPCTSTR pTitle = _tcsstr(lastLine, TEXT("] "));
-            if (pTitle) {
-                _tcscpy_s(m_szLastRecordedTitle, pTitle + 2);
+            // TSV形式: [時刻]\tエイリアス\tファイル名 からタブ区切りで2列目+3列目を取得
+            LPCTSTR pTab1 = _tcschr(lastLine, TEXT('\t'));
+            if (pTab1) {
+                LPCTSTR pCol2 = pTab1 + 1;
+                LPCTSTR pTab2 = _tcschr(pCol2, TEXT('\t'));
+                if (pTab2) {
+                    LPCTSTR pCol3 = pTab2 + 1;
+                    // グループキー = エイリアス + "\\" + ファイル名
+                    TCHAR alias[256] = {};
+                    size_t aliasLen = pTab2 - pCol2;
+                    if (aliasLen < _countof(alias)) {
+                        _tcsncpy_s(alias, pCol2, aliasLen);
+                    }
+                    _stprintf_s(m_szLastRecordedGroup, TEXT("%s\\%s"), alias, pCol3);
+                }
             }
         }
     }
@@ -549,7 +586,112 @@ void CTvtPlay::LoadSettings()
 }
 
 
-static void LoadFontSetting(LOGFONT *pFont, LPCTSTR iniFileName)
+// DirAliasesセクションからエイリアスを読み込む
+// INI内形式:
+// [DirAliases]
+// D:\User\Videos=REC
+void CTvtPlay::LoadDirAliases()
+{
+    m_dirAliasCount = 0;
+
+    std::vector<TCHAR> buf = GetPrivateProfileSectionBuffer(TEXT("DirAliases"), m_szIniFileName);
+    LPCTSTR p = buf.data();
+    while (*p && m_dirAliasCount < DIR_ALIAS_MAX) {
+        // 各エントリは "key=value\0" の形式
+        LPCTSTR eq = _tcschr(p, TEXT('='));
+        if (eq && eq != p) {
+            size_t keyLen = eq - p;
+            LPCTSTR val = eq + 1;
+            if (keyLen < DIR_ALIAS_PATH_MAX && _tcslen(val) < DIR_ALIAS_NAME_MAX && val[0]) {
+                DIR_ALIAS& a = m_dirAliases[m_dirAliasCount];
+                _tcsncpy_s(a.path, p, keyLen);
+                a.path[keyLen] = 0;
+                _tcscpy_s(a.name, val);
+                // パスの末尾バックスラッシュを除去
+                size_t pathLen = _tcslen(a.path);
+                while (pathLen > 0 && (a.path[pathLen - 1] == TEXT('\\') || a.path[pathLen - 1] == TEXT('/'))) {
+                    a.path[--pathLen] = 0;
+                }
+                ++m_dirAliasCount;
+            }
+        }
+        p += _tcslen(p) + 1;
+    }
+}
+
+// 親ディレクトリからエイリアスを検索（最長プレフィックス一致）
+// outPrefix に "エイリアス" または "エイリアス/サブフォルダ" を格納する
+// 一致なしの場合はfalseを返し、outPrefixには parentDir をそのままコピーする
+bool CTvtPlay::FindDirAlias(LPCTSTR parentDir, TCHAR* outPrefix, int outPrefixSize) const
+{
+    if (!parentDir || !parentDir[0]) {
+        _tcscpy_s(outPrefix, outPrefixSize, TEXT("?"));
+        return false;
+    }
+
+    // 正規化用: 小文字化してバックスラッシュ統一
+    TCHAR normParent[MAX_PATH];
+    _tcscpy_s(normParent, parentDir);
+    ::CharLower(normParent);
+    for (LPTSTR c = normParent; *c; ++c) {
+        if (*c == TEXT('/')) *c = TEXT('\\');
+    }
+    // 末尾の区切り除去
+    size_t normParentLen = _tcslen(normParent);
+    while (normParentLen > 0 && normParent[normParentLen - 1] == TEXT('\\')) {
+        normParent[--normParentLen] = 0;
+    }
+
+    int bestIndex = -1;
+    size_t bestLen = 0;
+
+    for (int i = 0; i < m_dirAliasCount; ++i) {
+        TCHAR normAlias[MAX_PATH];
+        _tcscpy_s(normAlias, m_dirAliases[i].path);
+        ::CharLower(normAlias);
+        for (LPTSTR c = normAlias; *c; ++c) {
+            if (*c == TEXT('/')) *c = TEXT('\\');
+        }
+        size_t aliasLen = _tcslen(normAlias);
+        while (aliasLen > 0 && normAlias[aliasLen - 1] == TEXT('\\')) {
+            normAlias[--aliasLen] = 0;
+        }
+
+        if (normParentLen >= aliasLen &&
+            _tcsncmp(normParent, normAlias, aliasLen) == 0 &&
+            (normParentLen == aliasLen || normParent[aliasLen] == TEXT('\\')))
+        {
+            if (aliasLen > bestLen) {
+                bestLen = aliasLen;
+                bestIndex = i;
+            }
+        }
+    }
+
+    if (bestIndex >= 0) {
+        if (normParentLen == bestLen) {
+            _tcscpy_s(outPrefix, outPrefixSize, m_dirAliases[bestIndex].name);
+        }
+        else {
+            // サブフォルダあり: 元のパス(大文字小文字保持)からサブフォルダ部分を取得
+            LPCTSTR remainder = parentDir + bestLen + 1; // '\\' の次
+            TCHAR remainderSlash[MAX_PATH];
+            _tcscpy_s(remainderSlash, remainder);
+            for (LPTSTR c = remainderSlash; *c; ++c) {
+                if (*c == TEXT('\\')) *c = TEXT('/');
+            }
+            _stprintf_s(outPrefix, outPrefixSize, TEXT("%s/%s"),
+                m_dirAliases[bestIndex].name, remainderSlash);
+        }
+        return true;
+    }
+
+    _tcscpy_s(outPrefix, outPrefixSize, parentDir);
+    return false;
+}
+
+
+static void LoadFontSetting(LOGFONT* pFont, LPCTSTR iniFileName)
 {
     std::vector<TCHAR> buf = GetPrivateProfileSectionBuffer(TEXT("Status"), iniFileName);
     TCHAR szFont[LF_FACESIZE];
@@ -731,6 +873,13 @@ void CTvtPlay::SaveSettings(bool fWriteDefault) const
 #endif
         WritePrivateProfileInt(SETTINGS, TEXT("SeekItemOrder"), m_seekItemOrder, m_szIniFileName);
         WritePrivateProfileInt(SETTINGS, TEXT("StatusItemOrder"), m_posItemOrder, m_szIniFileName);
+        WritePrivateProfileInt(SETTINGS, TEXT("SpeedItemOrder"), m_speedItemOrder, m_szIniFileName);
+        WritePrivateProfileInt(SETTINGS, TEXT("SpeedItemWidth"), m_speedItemWidth, m_szIniFileName);
+        WritePrivateProfileInt(
+            SETTINGS,
+            TEXT("ShowStretchButtons"),
+            m_fShowStretchButtons,
+            m_szIniFileName);
         ::WritePrivateProfileString(SETTINGS, TEXT("IconImage"), m_szIconFileName, m_szIniFileName);
 
         for (int i = 0; i < m_seekListNum; ++i) {
@@ -837,7 +986,7 @@ void CTvtPlay::StretchDelta(int delta)
 void CTvtPlay::CopyTimeTitle()
 {
     if (!IsOpen() || m_playlist.Get().empty()) {
-        ShowSpeedOsd(0); // 何も開いていない
+        ShowSpeedOsd(0);
         return;
     }
 
@@ -845,14 +994,36 @@ void CTvtPlay::CopyTimeTitle()
     if (pos < 0) pos = 0;
 
     int h = pos / 3600000;
-    int m = (pos / 60000) % 60;
+    int mn = (pos / 60000) % 60;
     int s = (pos / 1000) % 60;
 
     LPCTSTR filePath = m_playlist.Get()[m_playlist.GetPosition()].path;
     LPCTSTR fileName = ::PathFindFileName(filePath);
 
+    // 親ディレクトリを取得
+    TCHAR parentDir[MAX_PATH] = {};
+    if (fileName > filePath) {
+        size_t parentLen = fileName - filePath;
+        // 末尾の区切り文字を除いてコピー
+        if (parentLen > 0 && (filePath[parentLen - 1] == TEXT('\\') || filePath[parentLen - 1] == TEXT('/'))) {
+            --parentLen;
+        }
+        if (parentLen > 0 && parentLen < _countof(parentDir)) {
+            _tcsncpy_s(parentDir, filePath, parentLen);
+        }
+    }
+
+    // エイリアス解決
+    TCHAR prefix[MAX_PATH] = {};
+    FindDirAlias(parentDir, prefix, _countof(prefix));
+
+    // TSV形式: [時刻]\tエイリアス\tファイル名
     TCHAR text[1024];
-    _stprintf_s(text, TEXT("[%02d:%02d:%02d] %s"), h, m, s, fileName);
+    _stprintf_s(text, TEXT("[%02d:%02d:%02d]\t%s\t%s"), h, mn, s, prefix, fileName);
+
+    // グループキー: エイリアス + "\\" + ファイル名
+    TCHAR groupKey[512];
+    _stprintf_s(groupKey, TEXT("%s\\%s"), prefix, fileName);
 
     // クリップボードにコピー
     if (m_timestampMode >= 1) {
@@ -861,11 +1032,11 @@ void CTvtPlay::CopyTimeTitle()
 
     // ファイルに追記
     if (m_timestampMode >= 2) {
-        AppendToTimestampFile(text, fileName);
+        AppendToTimestampFile(text, groupKey);
     }
 
-    // OSD通知 (時刻部分だけ表示)
-    _stprintf_s(m_szOsdText, TEXT("Saved %02d:%02d:%02d"), h, m, s);
+    // OSD通知
+    _stprintf_s(m_szOsdText, TEXT("Saved %02d:%02d:%02d"), h, mn, s);
 
     // OSD表示 (ShowSpeedOsdと同じ流れ)
     if (m_hwndOsd) {
@@ -968,17 +1139,17 @@ void CTvtPlay::CopyToClipboard(LPCTSTR text)
     }
 }
 
-void CTvtPlay::AppendToTimestampFile(LPCTSTR text, LPCTSTR title)
+void CTvtPlay::AppendToTimestampFile(LPCTSTR text, LPCTSTR groupKey)
 {
     if (!m_szTimestampFilePath[0]) return;
 
-    FILE *fp = nullptr;
+    FILE* fp = nullptr;
     if (_tfopen_s(&fp, m_szTimestampFilePath, TEXT("a, ccs=UTF-8")) || !fp) {
         return;
     }
 
-    // 前回と異なるタイトルなら空行を挟む
-    if (m_szLastRecordedTitle[0] && _tcsicmp(m_szLastRecordedTitle, title) != 0) {
+    // 前回と異なるグループなら空行を挟む
+    if (m_szLastRecordedGroup[0] && _tcsicmp(m_szLastRecordedGroup, groupKey) != 0) {
         _fputts(TEXT("\n"), fp);
     }
 
@@ -987,8 +1158,8 @@ void CTvtPlay::AppendToTimestampFile(LPCTSTR text, LPCTSTR title)
 
     fclose(fp);
 
-    // 前回タイトルを更新
-    _tcscpy_s(m_szLastRecordedTitle, title);
+    // 前回グループキーを更新
+    _tcscpy_s(m_szLastRecordedGroup, groupKey);
 }
 
 int CTvtPlay::Base64UrlEncode(const char *src, int srcLen, char *dst, int dstSize)
@@ -1188,22 +1359,80 @@ bool CTvtPlay::InitializePlugin()
     HDC hdcMem = ::CreateCompatibleDC(nullptr);
     if (!hdcMem) return false;
 
-    int seekItemOrder = min(max(m_seekItemOrder, 0), BUTTON_MAX);
-    int posItemOrder = min(max(m_posItemOrder, 0), BUTTON_MAX);
-    if (m_posItemOrder < m_seekItemOrder) {
-        if (seekItemOrder==0) posItemOrder = -1;
-        if (posItemOrder==BUTTON_MAX) seekItemOrder = BUTTON_MAX + 1;
-    }
+    enum SpecialItemType {
+        SPECIAL_ITEM_SEEK,
+        SPECIAL_ITEM_POSITION,
+        SPECIAL_ITEM_SPEED
+    };
 
-    // 文字列解析してボタンアイテムを生成
-    for (int i = -1; i < BUTTON_MAX + 2; i++) {
-        if (i == seekItemOrder) {
-            m_statusView.AddItem(new CSeekStatusItem(this, m_fSeekDrawOfs, m_fSeekDrawTot, m_seekItemMinWidth, m_seekMode));
+    struct SpecialItem {
+        int Order;
+        int Priority;
+        SpecialItemType Type;
+    };
+
+    std::vector<SpecialItem> specialItems;
+    specialItems.push_back({
+        min(max(m_seekItemOrder, 0), BUTTON_MAX),
+        0,
+        SPECIAL_ITEM_SEEK
+        });
+    specialItems.push_back({
+        min(max(m_posItemOrder, 0), BUTTON_MAX),
+        1,
+        SPECIAL_ITEM_POSITION
+        });
+    specialItems.push_back({
+        min(max(m_speedItemOrder, 0), BUTTON_MAX),
+        2,
+        SPECIAL_ITEM_SPEED
+        });
+
+    std::stable_sort(
+        specialItems.begin(),
+        specialItems.end(),
+        [](const SpecialItem& a, const SpecialItem& b) {
+            if (a.Order != b.Order)
+                return a.Order < b.Order;
+            return a.Priority < b.Priority;
+        });
+
+    size_t specialIndex = 0;
+
+    // Order=N は ButtonNN の直前に挿入する。
+    // Order=BUTTON_MAX は全ボタンの後ろに挿入する。
+    for (int i = 0; i <= BUTTON_MAX; ++i) {
+        while (specialIndex < specialItems.size() &&
+            specialItems[specialIndex].Order == i) {
+            switch (specialItems[specialIndex].Type) {
+            case SPECIAL_ITEM_SEEK:
+                m_statusView.AddItem(new CSeekStatusItem(
+                    this,
+                    m_fSeekDrawOfs,
+                    m_fSeekDrawTot,
+                    m_seekItemMinWidth,
+                    m_seekMode));
+                break;
+
+            case SPECIAL_ITEM_POSITION:
+                m_statusView.AddItem(new CPositionStatusItem(this));
+                break;
+
+            case SPECIAL_ITEM_SPEED:
+                m_statusView.AddItem(new CSpeedStatusItem(
+                    this,
+                    m_speedItemWidth < 0 ? 48 : m_speedItemWidth));
+                break;
+            }
+
+            ++specialIndex;
         }
-        if (i == posItemOrder) {
-            m_statusView.AddItem(new CPositionStatusItem(this));
+
+        if (i >= BUTTON_MAX ||
+            !m_buttonList[i][0] ||
+            m_buttonList[i][0] == TEXT(';')) {
+            continue;
         }
-        if (i < 0 || BUTTON_MAX <= i || m_buttonList[i][0] == TEXT(';')) continue;
 
         // コマンドはカンマ区切りで2つまで指定できる
         int cmdID[2] = {-1, -1};
@@ -1245,8 +1474,22 @@ bool CTvtPlay::InitializePlugin()
         if (cmdID[0] < 0 || m_statusView.GetItemByID(STATUS_ITEM_BUTTON + cmdID[0])) continue;
         if (cmdID[1] < 0) {
             // サブコマンドの省略時解釈
-            cmdID[1] = (cmdID[0]==ID_COMMAND_PREV || cmdID[0]==ID_COMMAND_SEEK_END) ? ID_COMMAND_LIST_POPUP :
-                       (cmdID[0]==ID_COMMAND_OPEN) ? ID_COMMAND_OPEN_POPUP : ID_COMMAND_NOP;
+            cmdID[1] = (cmdID[0] == ID_COMMAND_PREV || cmdID[0] == ID_COMMAND_SEEK_END) ? ID_COMMAND_LIST_POPUP :
+                (cmdID[0] == ID_COMMAND_OPEN) ? ID_COMMAND_OPEN_POPUP : ID_COMMAND_NOP;
+        }
+
+        const bool fStretchButton =
+            cmdID[0] == ID_COMMAND_STRETCH ||
+            cmdID[0] == ID_COMMAND_STRETCH_RE ||
+            cmdID[0] == ID_COMMAND_STRETCH_POPUP ||
+            cmdID[0] == ID_COMMAND_STRETCH_UP ||
+            cmdID[0] == ID_COMMAND_STRETCH_DOWN ||
+            cmdID[0] == ID_COMMAND_STRETCH_RESET ||
+            (ID_COMMAND_STRETCH_A <= cmdID[0] &&
+                cmdID[0] < ID_COMMAND_STRETCH_A + COMMAND_S_MAX);
+
+        if (!m_fShowStretchButtons && fStretchButton) {
+            continue;
         }
 
         // StretchとStretchReとStretchPopupのみ大きいビットマップを使う
@@ -1322,17 +1565,36 @@ bool CTvtPlay::EnablePlugin(bool fEnable) {
             ::SetLayeredWindowAttributes(m_hwndOsd, 0, static_cast<BYTE>(m_osdAlpha), LWA_ALPHA);
         }
 
-        CStatusItem *pItem = m_statusView.GetItemByID(STATUS_ITEM_POSITION);
+        CStatusItem* pItem = m_statusView.GetItemByID(STATUS_ITEM_POSITION);
         if (pItem) {
             if (m_posItemWidth < 0) {
-                CPositionStatusItem *pPosItem = dynamic_cast<CPositionStatusItem*>(pItem);
-                pItem->SetWidth(pPosItem->CalcSuitableWidth());
+                CPositionStatusItem* pPosItem =
+                    dynamic_cast<CPositionStatusItem*>(pItem);
+                if (pPosItem) {
+                    pItem->SetWidth(pPosItem->CalcSuitableWidth());
+                }
             }
             else {
                 pItem->SetWidth(m_posItemWidth);
             }
         }
+
+        pItem = m_statusView.GetItemByID(STATUS_ITEM_SPEED);
+        if (pItem) {
+            if (m_speedItemWidth < 0) {
+                CSpeedStatusItem* pSpeedItem =
+                    dynamic_cast<CSpeedStatusItem*>(pItem);
+                if (pSpeedItem) {
+                    pItem->SetWidth(pSpeedItem->CalcSuitableWidth());
+                }
+            }
+            else {
+                pItem->SetWidth(m_speedItemWidth);
+            }
+        }
+
         OnDispModeChange(m_pApp->GetStandby(), true);
+
 #ifdef EN_SWC
         TCHAR blacklistPath[MAX_PATH + 32];
         if (::GetModuleFileName(g_hinstDLL, blacklistPath, MAX_PATH)) {
@@ -1744,25 +2006,57 @@ bool CTvtPlay::OpenWithPlayListPopup(const POINT &pt, UINT flags)
 
 
 // ポップアップメニュー選択で再生速度を設定
-void CTvtPlay::StretchWithPopup(const POINT &pt, UINT flags)
+void CTvtPlay::StretchWithPopup(const POINT& pt, UINT flags)
 {
-    // メニュー生成
+    enum {
+        MENU_SPEED_NORMAL = 1,
+        MENU_SPEED_LIST_BASE = 100
+    };
+
     int selID = 0;
-    int stid = GetStretchID();
+    const int currentSpeed = GetStretchSpeed();
+
     HMENU hmenu = ::CreatePopupMenu();
     if (hmenu) {
-        for (int i = 0; i < m_stretchListNum; ++i) {
-            if (m_stretchList[i] != 100) {
-                TCHAR str[32];
-                _stprintf_s(str, TEXT("%d%%"), m_stretchList[i]);
-                ::AppendMenu(hmenu, MF_STRING|(i==stid?MF_CHECKED:MF_UNCHECKED), 1 + i, str);
-            }
+        ::AppendMenu(
+            hmenu,
+            MF_STRING |
+            (currentSpeed == 100 ? MF_CHECKED : MF_UNCHECKED),
+            MENU_SPEED_NORMAL,
+            TEXT("100%"));
+
+        if (m_stretchListNum > 0) {
+            ::AppendMenu(hmenu, MF_SEPARATOR, 0, nullptr);
         }
+
+        for (int i = 0; i < m_stretchListNum; ++i) {
+            if (m_stretchList[i] == 100)
+                continue;
+
+            TCHAR str[32];
+            _stprintf_s(str, TEXT("%d%%"), m_stretchList[i]);
+
+            ::AppendMenu(
+                hmenu,
+                MF_STRING |
+                (currentSpeed == m_stretchList[i]
+                    ? MF_CHECKED
+                    : MF_UNCHECKED),
+                MENU_SPEED_LIST_BASE + i,
+                str);
+        }
+
         selID = TrackPopup(hmenu, pt, flags);
         ::DestroyMenu(hmenu);
     }
-    if (0 <= selID-1 && selID-1 < m_stretchListNum) {
-        Stretch(selID-1==stid ? -1 : selID-1);
+
+    if (selID == MENU_SPEED_NORMAL) {
+        StretchDirect(100);
+    }
+    else if (MENU_SPEED_LIST_BASE <= selID &&
+        selID < MENU_SPEED_LIST_BASE + m_stretchListNum) {
+        StretchDirect(m_stretchList[
+            selID - MENU_SPEED_LIST_BASE]);
     }
 }
 
@@ -2332,6 +2626,8 @@ void CTvtPlay::StretchInternal(int speed, bool fShowOsd)
     if (fShowOsd) {
         ShowSpeedOsd(speed);
     }
+
+    m_statusView.UpdateItem(STATUS_ITEM_SPEED);
 }
 
 void CTvtPlay::ShowSpeedOsd(int speed)
@@ -2482,6 +2778,17 @@ int CTvtPlay::GetStretchID()
         if (m_stretchList[i] == m_infoSpeed) return i;
     }
     return -1;
+}
+
+int CTvtPlay::GetStretchSpeed()
+{
+    lock_recursive_mutex lock(m_tsInfoLock);
+    return m_infoSpeed;
+}
+
+void CTvtPlay::ResetStretch()
+{
+    StretchDirect(100);
 }
 
 void CTvtPlay::Stretch(int stretchID)
@@ -2638,11 +2945,21 @@ void CTvtPlay::OnFrameResize()
             RECT rcMgn;
             m_statusView.GetItemMargin(&rcMgn);
             for (int i = 0; i < num; ++i) {
-                if (i != idSeek) {
-                    cmpl += m_statusView.GetItem(i)->GetWidth() + rcMgn.left + rcMgn.right;
+                CStatusItem* pItem = m_statusView.GetItem(i);
+                if (i != idSeek && pItem && pItem->GetVisible()) {
+                    cmpl += pItem->GetWidth() + rcMgn.left + rcMgn.right;
                 }
             }
-            pItemSeek->SetWidth(rcc.right - rcMgn.left - rcMgn.right - 2 - mgnx*2 - cmpl);
+
+            const int seekWidth =
+                rcc.right -
+                rcMgn.left -
+                rcMgn.right -
+                2 -
+                mgnx * 2 -
+                cmpl;
+
+            pItemSeek->SetWidth(max(seekWidth, pItemSeek->GetMinWidth()));
         }
         m_statusView.SetPosition(mgnx, fFull && m_statusRowFull==-1 ? -1 : 0,
                                  rcc.right - mgnx*2, rcc.bottom - mgny);

@@ -34,6 +34,7 @@ enum {
 enum {
     STATUS_ITEM_SEEK,
     STATUS_ITEM_POSITION,
+    STATUS_ITEM_SPEED,
     STATUS_ITEM_BUTTON,
 };
 
@@ -54,9 +55,12 @@ public:
     virtual bool IsSingleRepeat() const=0;
     virtual bool IsRepeatChapterEnabled() const=0;
     virtual bool IsSkipXChapterEnabled() const=0;
-    virtual bool IsPosDrawTotEnabled() const=0;
-    virtual int GetStretchID()=0;
-    virtual void SetupWithPopup(const POINT &pt, UINT flags)=0;
+    virtual bool IsPosDrawTotEnabled() const = 0;
+    virtual int GetStretchID() = 0;
+    virtual int GetStretchSpeed() = 0;
+    virtual void StretchWithPopup(const POINT& pt, UINT flags) = 0;
+    virtual void ResetStretch() = 0;
+    virtual void SetupWithPopup(const POINT& pt, UINT flags) = 0;
     virtual void EditChapterWithPopup(int pos, const POINT &pt, UINT flags)=0;
     virtual void EditAllChaptersWithPopup(const POINT &pt, UINT flags)=0;
     virtual void Pause(bool fPause)=0;
@@ -128,6 +132,22 @@ public:
     void OnRButtonDown(int x, int y);
 private:
     ITvtPlayController *m_pPlugin;
+};
+
+class CSpeedStatusItem : public CStatusItem
+{
+public:
+    CSpeedStatusItem(ITvtPlayController* pPlugin, int width);
+    LPCTSTR GetName() const { return TEXT("再生速度"); }
+    void Draw(HDC hdc, const RECT* pRect);
+    bool DelaySingleClick() const { return true; }
+    void OnLButtonSingleClick(int x, int y);
+    void OnLButtonDoubleClick(int x, int y);
+    void OnRButtonDown(int x, int y);
+    int CalcSuitableWidth();
+
+private:
+    ITvtPlayController* m_pPlugin;
 };
 
 class CButtonStatusItem : public CStatusItem

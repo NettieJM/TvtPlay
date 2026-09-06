@@ -49,10 +49,12 @@ public:
 	virtual LPCTSTR GetName() const=0;
 	virtual void Draw(HDC hdc,const RECT *pRect)=0;
 	virtual void DrawPreview(HDC hdc,const RECT *pRect) { Draw(hdc,pRect); }
-	virtual void OnLButtonDown(int x,int y) {}
-	virtual void OnLButtonUp(int x,int y) {}
-	virtual void OnRButtonDown(int x,int y) { OnLButtonDown(x,y); }
-	virtual void OnLButtonDoubleClick(int x,int y) { OnLButtonDown(x,y); }
+	virtual bool DelaySingleClick() const { return false; }
+	virtual void OnLButtonDown(int x, int y) {}
+	virtual void OnLButtonUp(int x, int y) {}
+	virtual void OnLButtonSingleClick(int x, int y) {}
+	virtual void OnRButtonDown(int x, int y) { OnLButtonDown(x, y); }
+	virtual void OnLButtonDoubleClick(int x, int y) { OnLButtonDown(x, y); }
 	virtual void OnMouseMove(int x,int y) {}
 	virtual void OnVisibleChange(bool fVisible) {}
 	virtual void OnFocus(bool fFocus) {}
@@ -142,7 +144,10 @@ private:
 	int m_HotItem;
 	CMouseLeaveTrack m_MouseLeaveTrack;
 	bool m_fOnButtonDown;
-	CEventHandler *m_pEventHandler;
+	UINT_PTR m_SingleClickTimer;
+	int m_PendingClickItem;
+	POINT m_PendingClickPos;
+	CEventHandler* m_pEventHandler;
 	DrawUtil::COffscreen m_Offscreen;
 	bool m_fBufferedPaint;
 	CBufferedPaint m_BufferedPaint;

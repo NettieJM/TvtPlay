@@ -194,6 +194,8 @@ CStatusView::CStatusView()
 	, m_fSingleMode(false)
 	, m_HotItem(-1)
 	, m_fOnButtonDown(false)
+	, m_SingleClickTimer(0)
+	, m_PendingClickItem(-1)
 	, m_pEventHandler(NULL)
 	, m_fBufferedPaint(false)
 	, m_fAdjustSize(true)
@@ -219,6 +221,10 @@ CStatusView::CStatusView()
 	m_Theme.HighlightItemStyle.TextColor=RGB(255,255,255);
 	m_Theme.Border.Type=Theme::BORDER_RAISED;
 	m_Theme.Border.Color=RGB(192,192,192);
+
+	m_PendingClickPos.x = 0;
+	m_PendingClickPos.y = 0;
+
 }
 
 
@@ -414,23 +420,33 @@ LRESULT CStatusView::OnMessage(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam)
 	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_LBUTTONDBLCLK:
-		if (m_HotItem>=0) {
-			int x=GET_X_LPARAM(lParam),y=GET_Y_LPARAM(lParam);
+		if (m_HotItem >= 0) {
+			int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
 			RECT rc;
 
-			GetItemRectByIndex(m_HotItem,&rc);
-			x-=rc.left;
-			y-=rc.top;
-			m_fOnButtonDown=true;
+			GetItemRectByIndex(m_HotItem, &rc);
+			x -= rc.left;
+			y -= rc.top;
+			m_fOnButtonDown = true;
+
 			switch (uMsg) {
 			case WM_LBUTTONDOWN:
-				m_ItemList[m_HotItem]->OnLButtonDown(x,y);
+				if (!m_ItemList[m_HotItem]->DelaySingleClick()) {
+					m_ItemList[m_HotItem]->OnLButtonDown(x, y);
+				}
 				break;
+
 			case WM_RBUTTONDOWN:
-				m_ItemList[m_HotItem]->OnRButtonDown(x,y);
+				m_ItemList[m_HotItem]->OnRButtonDown(x, y);
 				break;
+
 			case WM_LBUTTONDBLCLK:
-				m_ItemList[m_HotItem]->OnLButtonDoubleClick(x,y);
+				if (m_SingleClickTimer != 0) {
+					::KillTimer(hwnd, m_SingleClickTimer);
+					m_SingleClickTimer = 0;
+					m_PendingClickItem = -1;
+				}
+				m_ItemList[m_HotItem]->OnLButtonDoubleClick(x, y);
 				break;
 			}
 			m_fOnButtonDown=false;
@@ -452,14 +468,34 @@ LRESULT CStatusView::OnMessage(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam)
 		return 0;
 
 	case WM_LBUTTONUP:
-		if (m_HotItem>=0) {
-			int x=GET_X_LPARAM(lParam),y=GET_Y_LPARAM(lParam);
+		if (m_HotItem >= 0) {
+			int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
 			RECT rc;
 
-			GetItemRectByIndex(m_HotItem,&rc);
-			x-=rc.left;
-			y-=rc.top;
-			m_ItemList[m_HotItem]->OnLButtonUp(x,y);
+			GetItemRectByIndex(m_HotItem, &rc);
+			x -= rc.left;
+			y -= rc.top;
+
+			CStatusItem* pItem = m_ItemList[m_HotItem];
+			pItem->OnLButtonUp(x, y);
+
+			if (pItem->DelaySingleClick() &&
+				m_SingleClickTimer == 0) {
+				m_PendingClickItem = m_HotItem;
+				m_PendingClickPos.x = x;
+				m_PendingClickPos.y = y;
+				m_SingleClickTimer =
+					::SetTimer(
+						hwnd,
+						1,
+						::GetDoubleClickTime(),
+						NULL);
+
+				if (m_SingleClickTimer == 0) {
+					pItem->OnLButtonSingleClick(x, y);
+					m_PendingClickItem = -1;
+				}
+			}
 		}
 		if (::GetCapture()==hwnd) {
 			ReleaseCapture();
@@ -494,6 +530,24 @@ LRESULT CStatusView::OnMessage(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam)
 		}
 		break;
 
+	case WM_TIMER:
+		if (m_SingleClickTimer != 0 &&
+			wParam == m_SingleClickTimer) {
+			::KillTimer(hwnd, m_SingleClickTimer);
+			m_SingleClickTimer = 0;
+
+			if (m_PendingClickItem >= 0 &&
+				(size_t)m_PendingClickItem < m_ItemList.size()) {
+				m_ItemList[m_PendingClickItem]->OnLButtonSingleClick(
+					m_PendingClickPos.x,
+					m_PendingClickPos.y);
+			}
+
+			m_PendingClickItem = -1;
+			return 0;
+		}
+		break;
+
 	case WM_NOTIFY:
 		if (m_HotItem>=0)
 			return m_ItemList[m_HotItem]->OnNotifyMessage(reinterpret_cast<LPNMHDR>(lParam));
@@ -504,6 +558,11 @@ LRESULT CStatusView::OnMessage(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam)
 		return 0;
 
 	case WM_DESTROY:
+		if (m_SingleClickTimer != 0) {
+			::KillTimer(hwnd, m_SingleClickTimer);
+			m_SingleClickTimer = 0;
+		}
+		m_PendingClickItem = -1;
 		m_Offscreen.Destroy();
 		return 0;
 	}

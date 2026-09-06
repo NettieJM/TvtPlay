@@ -293,12 +293,21 @@ void CSeekStatusItem::UpdateTooltip(int x, int y)
     int posSec = posMsec / 1000;
 
     // テキスト生成
-    TCHAR szText[64];
+    TCHAR szText[128];
+    TCHAR szTotText[64] = {};
+
+    // 放送時刻(TOT)を取得して付加する
+    int tot = m_pPlugin->GetTotTime();
+    if (tot >= 0) {
+        int totSec = tot / 1000 + posSec;
+        _stprintf_s(szTotText, _countof(szTotText), TEXT(" (%d:%02d:%02d)"), totSec / 60 / 60 % 24, totSec / 60 % 60, totSec % 60);
+    }
+
     if (posSec < 3600 && dur < 3600000) {
-        _stprintf_s(szText, TEXT("%02d:%02d"), posSec / 60 % 60, posSec % 60);
+        _stprintf_s(szText, _countof(szText), TEXT("%02d:%02d%s"), posSec / 60 % 60, posSec % 60, szTotText);
     }
     else {
-        _stprintf_s(szText, TEXT("%d:%02d:%02d"), posSec / 60 / 60, posSec / 60 % 60, posSec % 60);
+        _stprintf_s(szText, _countof(szText), TEXT("%d:%02d:%02d%s"), posSec / 60 / 60, posSec / 60 % 60, posSec % 60, szTotText);
     }
 
     // ローカル座標→スクリーン座標
@@ -671,6 +680,111 @@ void CPositionStatusItem::OnRButtonDown(int x, int y)
     if (GetMenuPos(&pt, &flags)) {
         m_pPlugin->SetupWithPopup(pt, flags);
     }
+}
+
+// ============================================================
+// CSpeedStatusItem
+// ============================================================
+
+CSpeedStatusItem::CSpeedStatusItem(ITvtPlayController* pPlugin, int width)
+    : CStatusItem(STATUS_ITEM_SPEED, max(width, 0))
+    , m_pPlugin(pPlugin)
+{
+    m_MinWidth = 0;
+}
+
+void CSpeedStatusItem::Draw(HDC hdc, const RECT* pRect)
+{
+    const int speed = m_pPlugin->GetStretchSpeed();
+
+    TCHAR szText[32];
+    if (speed % 100 == 0) {
+        _stprintf_s(szText, TEXT("%dx"), speed / 100);
+    }
+    else if (speed % 10 == 0) {
+        _stprintf_s(
+            szText,
+            TEXT("%d.%01dx"),
+            speed / 100,
+            speed % 100 / 10);
+    }
+    else {
+        _stprintf_s(
+            szText,
+            TEXT("%d.%02dx"),
+            speed / 100,
+            speed % 100);
+    }
+
+    ::DrawText(
+        hdc,
+        szText,
+        -1,
+        const_cast<LPRECT>(pRect),
+        DT_CENTER | DT_SINGLELINE | DT_VCENTER |
+        DT_NOPREFIX | DT_END_ELLIPSIS);
+}
+
+void CSpeedStatusItem::OnLButtonSingleClick(int x, int y)
+{
+    POINT pt;
+    UINT flags;
+
+    if (GetMenuPos(&pt, &flags)) {
+        m_pPlugin->StretchWithPopup(pt, flags);
+    }
+}
+
+void CSpeedStatusItem::OnLButtonDoubleClick(int x, int y)
+{
+    m_pPlugin->ResetStretch();
+}
+
+void CSpeedStatusItem::OnRButtonDown(int x, int y)
+{
+    POINT pt;
+    UINT flags;
+
+    if (GetMenuPos(&pt, &flags)) {
+        m_pPlugin->SetupWithPopup(pt, flags);
+    }
+}
+
+int CSpeedStatusItem::CalcSuitableWidth()
+{
+    if (!m_pStatus)
+        return GetDefaultWidth();
+
+    LOGFONT logFont;
+    if (!m_pStatus->GetFont(&logFont))
+        return GetDefaultWidth();
+
+    HFONT hfont = ::CreateFontIndirect(&logFont);
+    if (!hfont)
+        return GetDefaultWidth();
+
+    int width = GetDefaultWidth();
+    HDC hdc = ::GetDC(m_pStatus->GetHandle());
+
+    if (hdc) {
+        HFONT hfontOld = SelectFont(hdc, hfont);
+        RECT rc = {};
+
+        if (::DrawText(
+            hdc,
+            TEXT("8.00x"),
+            -1,
+            &rc,
+            DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT)) {
+            width = rc.right - rc.left;
+        }
+
+        SelectFont(hdc, hfontOld);
+        ::ReleaseDC(m_pStatus->GetHandle(), hdc);
+    }
+
+    ::DeleteObject(hfont);
+    return width;
 }
 
 CButtonStatusItem::CButtonStatusItem(ITvtPlayController *pPlugin, int id, int subID, int width, const DrawUtil::CBitmap &icon)

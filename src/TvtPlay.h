@@ -14,6 +14,14 @@ class CTvtPlay : public TVTest::CTVTestPlugin, public ITvtPlayController
 {
     static const int BUTTON_MAX = 18;
     static const int BUTTON_TEXT_MAX = 192;
+    static const int DIR_ALIAS_MAX = 32;
+    static const int DIR_ALIAS_PATH_MAX = MAX_PATH;
+    static const int DIR_ALIAS_NAME_MAX = 64;
+
+    struct DIR_ALIAS {
+        TCHAR path[DIR_ALIAS_PATH_MAX];
+        TCHAR name[DIR_ALIAS_NAME_MAX];
+    };
     static const int TIMER_AUTO_HIDE_INTERVAL = 100;
     static const int TIMER_UPDATE_HASH_LIST_INTERVAL = 5000;
     static const int TIMER_SYNC_CHAPTER_INTERVAL = 1000;
@@ -44,7 +52,10 @@ public:
     bool IsSkipXChapterEnabled() const { return m_fSkipXChapter; }
     bool IsPosDrawTotEnabled() const { return m_fPosDrawTot; }
     int GetStretchID();
-    void SetupWithPopup(const POINT &pt, UINT flags);
+    int GetStretchSpeed();
+    void StretchWithPopup(const POINT& pt, UINT flags);
+    void ResetStretch();
+    void SetupWithPopup(const POINT& pt, UINT flags);
     void EditChapterWithPopup(int pos, const POINT &pt, UINT flags);
     void EditAllChaptersWithPopup(const POINT &pt, UINT flags);
     void Pause(bool fPause);
@@ -75,7 +86,6 @@ private:
     bool OpenWithDialog();
     bool OpenWithPopup(const POINT &pt, UINT flags);
     bool OpenWithPlayListPopup(const POINT &pt, UINT flags);
-    void StretchWithPopup(const POINT &pt, UINT flags);
     void SeekChapterWithPopup(const POINT &pt, UINT flags);
     int TrackPopup(HMENU hmenu, const POINT &pt, UINT flags);
     bool OpenCurrent(int offset = -1, int stretchID = -1);
@@ -94,7 +104,9 @@ private:
     void UpdateOsdPosition(int width = -1, int height = -1);
     void CopyTimeTitle();
     void CopyToClipboard(LPCTSTR text);
-    void AppendToTimestampFile(LPCTSTR text, LPCTSTR title);
+    void AppendToTimestampFile(LPCTSTR text, LPCTSTR groupKey);
+    void LoadDirAliases();
+    bool FindDirAlias(LPCTSTR parentDir, TCHAR* outPrefix, int outPrefixSize) const;
     void NotifyDOpusLabel(LPCTSTR filePath, bool fAdd);
     static int Base64UrlEncode(const char *src, int srcLen, char *dst, int dstSize);
     bool GetCurrentFileID(TVTP_FILE_ID_INFO *pInfo);
@@ -140,8 +152,10 @@ private:
     int m_osdAlpha;
     int m_osdTimeout;
     TCHAR m_szTimestampFilePath[MAX_PATH];
-    TCHAR m_szLastRecordedTitle[MAX_PATH];
+    TCHAR m_szLastRecordedGroup[512];
     int m_timestampMode;
+    DIR_ALIAS m_dirAliases[DIR_ALIAS_MAX];
+    int m_dirAliasCount;
     bool m_fDOpusLabel;
     TCHAR m_szDOpusPath[MAX_PATH];
     TCHAR m_szDOpusLabel[64];
@@ -156,6 +170,8 @@ private:
     int m_seekItemMinWidth, m_posItemWidth;
     int m_timeoutOnCmd, m_timeoutOnMove;
     int m_seekItemOrder, m_posItemOrder;
+    int m_speedItemOrder, m_speedItemWidth;
+    bool m_fShowStretchButtons;
     int m_dispCount;
     DWORD m_lastDropCount;
     int m_resetDropInterval;
